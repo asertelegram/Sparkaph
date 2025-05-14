@@ -1,0 +1,34 @@
+services:
+  # Сервис пользовательского бота
+  - type: worker
+    name: sparkaph-user-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python user_bot.py
+    plan: free
+    envVars:
+      - key: USER_BOT_TOKEN
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: CHANNEL_ID
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+
+  # Сервис админского бота
+  - type: worker
+    name: sparkaph-admin-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python admin_bot.py
+    plan: free
+    envVars:
+      - key: ADMIN_BOT_TOKEN
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: CHANNEL_ID
+        sync: false
+      - key: ADMIN_ID
+        sync: false 

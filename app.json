@@ -1,0 +1,38 @@
+{
+    "name": "Sparkaph",
+    "description": "Telegram-бот для мотивации и личностного роста",
+    "keywords": [
+        "python",
+        "telegram",
+        "bot",
+        "challenge"
+    ],
+    "env": {
+        "USER_BOT_TOKEN": {
+            "description": "Токен пользовательского бота",
+            "value": "7825589126:AAH8VzfPmewmopuNK1iYZRILx_s25PLAorE"
+        },
+        "ADMIN_BOT_TOKEN": {
+            "description": "Токен админского бота",
+            "value": "7842466395:AAE18Gs5dn_LaGfP8pVpUKMpBDjq78Sa0lw"
+        },
+        "MONGODB_URI": {
+            "description": "URI подключения к MongoDB",
+            "value": "mongodb+srv://Stexiel:ASER2007@cluster0.h0r4kz4.mongodb.net/Sparkaph?retryWrites=true&w=majority&appName=Cluster0"
+        },
+        "CHANNEL_ID": {
+            "description": "ID канала Telegram",
+            "value": "@SparkaphChannel"
+        },
+        "ADMIN_ID": {
+            "description": "ID администратора",
+            "value": "1521413812"
+        }
+    },
+    "formation": {
+        "worker": {
+            "quantity": 1,
+            "size": "free"
+        }
+    }
+}
