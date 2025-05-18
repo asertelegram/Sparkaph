@@ -5,6 +5,10 @@ from typing import Optional, Dict, Any, Union
 from bson import ObjectId
 import base64
 import tempfile
+import ssl
+import certifi
+import urllib.parse
+import dns.resolver
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -24,6 +28,10 @@ logger = logging.getLogger(__name__)
 # Загрузка переменных окружения
 load_dotenv()
 
+# Глобальные переменные для хранения подключения к БД
+db = None
+MOCK_DB = False
+
 # Преобразование ADMIN_ID из строки в int
 try:
     ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -40,13 +48,193 @@ except Exception as e:
     logger.error(f"Ошибка инициализации бота: {e}")
     raise
 
-# Инициализация клиента MongoDB
-try:
-    mongo_client = AsyncIOMotorClient(os.getenv("MONGODB_URI"))
-    db = mongo_client.Sparkaph
-except Exception as e:
-    logger.error(f"Ошибка подключения к MongoDB: {e}")
-    raise
+# Создаем заглушку для MongoDB, если не удается подключиться
+class MockDB:
+    """Класс-заглушка для операций с базой данных, когда MongoDB недоступна."""
+    
+    def __init__(self):
+        self.users = MockCollection("users")
+        self.categories = MockCollection("categories")
+        self.challenges = MockCollection("challenges")
+        self.submissions = MockCollection("submissions")
+    
+    def __getattr__(self, name):
+        # Динамически создаем коллекции по мере необходимости
+        return MockCollection(name)
+
+class MockCollection:
+    """Имитация коллекции MongoDB."""
+    
+    def __init__(self, name):
+        self.name = name
+        self.data = []
+        logger.warning(f"Используется заглушка для коллекции {name}")
+    
+    async def find_one(self, query=None, *args, **kwargs):
+        logger.warning(f"Вызов find_one для {self.name} с заглушкой БД")
+        # Для тестирования админа
+        if self.name == "users" and query and query.get("user_id") == ADMIN_ID:
+            return {"user_id": ADMIN_ID, "username": "admin", "points": 0}
+        return None
+    
+    async def find(self, query=None, *args, **kwargs):
+        logger.warning(f"Вызов find для {self.name} с заглушкой БД")
+        return MockCursor([])
+    
+    async def insert_one(self, document, *args, **kwargs):
+        logger.warning(f"Вызов insert_one для {self.name} с заглушкой БД")
+        return MockResult()
+    
+    async def update_one(self, query, update, *args, **kwargs):
+        logger.warning(f"Вызов update_one для {self.name} с заглушкой БД")
+        return MockResult()
+    
+    async def count_documents(self, query=None, *args, **kwargs):
+        logger.warning(f"Вызов count_documents для {self.name} с заглушкой БД")
+        return 0
+
+class MockCursor:
+    """Имитация курсора MongoDB."""
+    
+    def __init__(self, data):
+        self.data = data
+    
+    async def to_list(self, length=None):
+        return []
+
+class MockResult:
+    """Имитация результата операции MongoDB."""
+    
+    @property
+    def inserted_id(self):
+        return ObjectId()
+
+# Функция для создания клиента MongoDB с повторными попытками
+async def create_mongodb_client(max_retries=3):
+    retry_count = 0
+    while retry_count < max_retries:
+        try:
+            logger.info(f"Попытка подключения к MongoDB (попытка {retry_count + 1}/{max_retries})...")
+            
+            # Получаем URI из переменных окружения
+            mongodb_uri = os.getenv("MONGODB_URI", "")
+            if not mongodb_uri:
+                logger.error("MONGODB_URI не найден в .env файле")
+                return None
+
+            # Логируем URI (без пароля)
+            safe_uri = mongodb_uri.replace(
+                mongodb_uri.split('@')[0],
+                mongodb_uri.split('@')[0].split(':')[0] + ':***'
+            ) if '@' in mongodb_uri else 'mongodb://***:***@host'
+            logger.info(f"Попытка подключения к: {safe_uri}")
+
+            # Создаем клиента с минимальными настройками
+            client = AsyncIOMotorClient(
+                mongodb_uri,
+                connectTimeoutMS=30000,
+                socketTimeoutMS=30000,
+                serverSelectionTimeoutMS=30000,
+                retryWrites=True,
+                tls=True,  # Используем tls вместо ssl
+                tlsAllowInvalidCertificates=True  # Временно разрешаем невалидные сертификаты
+            )
+
+            # Проверяем подключение с таймаутом
+            try:
+                logger.info("Проверка подключения...")
+                await asyncio.wait_for(client.admin.command('ping'), timeout=10.0)
+                logger.info("Пинг успешен!")
+                return client
+            except asyncio.TimeoutError:
+                logger.error("Таймаут при проверке подключения")
+                raise
+            except Exception as ping_error:
+                logger.error(f"Ошибка при проверке подключения: {ping_error}")
+                raise
+
+        except Exception as e:
+            retry_count += 1
+            error_msg = str(e)
+            logger.error(f"Ошибка подключения к MongoDB (попытка {retry_count}/{max_retries})")
+            logger.error(f"Тип ошибки: {type(e).__name__}")
+            logger.error(f"Описание ошибки: {error_msg}")
+            
+            if "ServerSelectionTimeoutError" in error_msg:
+                logger.error("Проблема с выбором сервера. Проверьте доступность кластера и сетевые настройки.")
+            elif "SSL" in error_msg or "TLS" in error_msg:
+                logger.error("Проблема с SSL/TLS. Возможно, проблема с сертификатами или настройками безопасности.")
+            elif "Authentication failed" in error_msg:
+                logger.error("Ошибка аутентификации. Проверьте правильность имени пользователя и пароля.")
+            elif "connect" in error_msg.lower():
+                logger.error("Проблема с подключением. Проверьте сетевое подключение и брандмауэр.")
+
+            if retry_count < max_retries:
+                wait_time = 2 ** retry_count
+                logger.info(f"Ожидание {wait_time} секунд перед следующей попыткой...")
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error("Все попытки подключения к MongoDB исчерпаны")
+                return None
+
+# Асинхронная функция инициализации MongoDB
+async def init_mongodb():
+    global db, MOCK_DB
+    try:
+        # Пытаемся создать клиента MongoDB
+        logger.info("Начало инициализации MongoDB...")
+        mongo_client = await create_mongodb_client()
+        
+        if mongo_client is None:
+            logger.warning("Не удалось подключиться к MongoDB, переключаемся на MOCK_DB")
+            MOCK_DB = True
+            db = MockDB()
+        else:
+            db = mongo_client.Sparkaph
+            # Проверяем доступ к базе данных
+            try:
+                collections = await db.list_collection_names()
+                logger.info(f"Доступные коллекции: {collections}")
+                logger.info("MongoDB клиент успешно инициализирован")
+            except Exception as e:
+                logger.error(f"Ошибка при проверке коллекций: {e}")
+                MOCK_DB = True
+                db = MockDB()
+
+    except Exception as e:
+        logger.error(f"Критическая ошибка при инициализации MongoDB: {e}")
+        logger.error(f"Тип ошибки: {type(e).__name__}")
+        db = MockDB()
+        MOCK_DB = True
+
+# Обработчик для отладки MongoDB подключения
+@dp.message(Command("dbtest"))
+async def cmd_dbtest(message: Message):
+    try:
+        if message.from_user.id != ADMIN_ID:
+            await message.answer("Эта команда доступна только администратору")
+            return
+        
+        await message.answer("Проверка подключения к MongoDB...")
+        
+        if MOCK_DB:
+            await message.answer("⚠️ Используется заглушка вместо MongoDB")
+            return
+        
+        # Проверяем подключение
+        try:
+            # Используем более короткий таймаут для проверки
+            result = await mongo_client.admin.command("ping", serverSelectionTimeoutMS=5000)
+            await message.answer(f"✅ MongoDB подключение работает!\nРезультат: {result}")
+            
+            # Проверяем доступность базы
+            collections = await db.list_collection_names()
+            await message.answer(f"📊 Доступные коллекции: {', '.join(collections) if collections else 'нет'}")
+        except Exception as e:
+            await message.answer(f"❌ Ошибка подключения к MongoDB: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при проверке MongoDB: {e}")
+        await message.answer(f"Произошла ошибка: {e}")
 
 # Состояния
 class AdminStates(StatesGroup):
@@ -296,205 +484,118 @@ async def check_submissions(message: Message):
         logger.error(f"Ошибка при проверке заданий: {e}")
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
-# Обработчик статистики
-@dp.message(F.text == "📊 Статистика")
-async def show_statistics(message: Message):
+# Показ статистики пользователей
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message):
     try:
         if message.from_user.id != ADMIN_ID:
             return
         
-        # Текущее время
-        now = datetime.now(UTC)
-        
-        # Статистика за разные периоды
-        stats = {}
-        
-        # Получение всех пользователей
-        total_users = await db.users.count_documents({})
-        stats["total_users"] = total_users
-        
-        # Получение активных пользователей (DAU - daily active users)
-        active_users_24h = await db.users.count_documents({
-            "last_activity": {"$gte": now - timedelta(days=1)}
-        })
-        stats["active_users_24h"] = active_users_24h
-        
-        # Активные пользователи за неделю (WAU - weekly active users)
-        active_users_7d = await db.users.count_documents({
-            "last_activity": {"$gte": now - timedelta(days=7)}
-        })
-        stats["active_users_7d"] = active_users_7d
-        
-        # Активные пользователи за 3 недели
-        active_users_21d = await db.users.count_documents({
-            "last_activity": {"$gte": now - timedelta(days=21)}
-        })
-        stats["active_users_21d"] = active_users_21d
-        
-        # Новые пользователи за последние 24 часа
-        new_users_24h = await db.users.count_documents({
-            "joined_at": {"$gte": now - timedelta(days=1)}
-        })
-        stats["new_users_24h"] = new_users_24h
-        
-        # Новые пользователи за последнюю неделю
-        new_users_7d = await db.users.count_documents({
-            "joined_at": {"$gte": now - timedelta(days=7)}
-        })
-        stats["new_users_7d"] = new_users_7d
-        
-        # Получение выполненных челленджей за разные периоды
-        completed_challenges_total = await db.submissions.count_documents({
-            "status": "approved"
-        })
-        stats["completed_challenges_total"] = completed_challenges_total
-        
-        completed_challenges_24h = await db.submissions.count_documents({
-            "status": "approved",
-            "reviewed_at": {"$gte": now - timedelta(days=1)}
-        })
-        stats["completed_challenges_24h"] = completed_challenges_24h
-        
-        completed_challenges_7d = await db.submissions.count_documents({
-            "status": "approved",
-            "reviewed_at": {"$gte": now - timedelta(days=7)}
-        })
-        stats["completed_challenges_7d"] = completed_challenges_7d
-        
-        # Статистика по категориям
-        categories = await db.categories.find().to_list(length=None)
-        category_stats = {}
-        
-        for category in categories:
-            category_id = category["_id"]
-            category_name = category["name"]
+        # Проверяем режим работы с базой данных
+        if MOCK_DB:
+            await message.answer("⚠️ База данных недоступна (режим заглушки). Статистика недоступна.")
+            return
             
-            # Количество челленджей в категории
-            challenges_count = await db.challenges.count_documents({
-                "category_id": category_id
-            })
+        # Сбор основной статистики
+        try:
+            # Получаем временные метки для разных периодов
+            now = datetime.now(UTC)
+            day_ago = now - timedelta(days=1)
+            week_ago = now - timedelta(days=7)
+            month_ago = now - timedelta(days=30)
             
-            # Количество выполненных челленджей в категории
-            completed_in_category = 0
-            challenges = await db.challenges.find({"category_id": category_id}).to_list(length=None)
+            # Общее количество пользователей
+            total_users = await db.users.count_documents({})
             
-            for challenge in challenges:
-                # Проверяем выполненные пользователями
-                submissions_count = await db.submissions.count_documents({
-                    "challenge_id": challenge["_id"],
+            # Активные пользователи за 24 часа, 7 дней и 30 дней
+            active_users_24h = await db.users.count_documents({"last_active": {"$gte": day_ago}})
+            active_users_7d = await db.users.count_documents({"last_active": {"$gte": week_ago}})
+            active_users_30d = await db.users.count_documents({"last_active": {"$gte": month_ago}})
+            
+            # Пользователи с неоконченными челленджами
+            users_with_challenges = await db.users.count_documents({"current_challenge": {"$ne": None}})
+            
+            # Процент выполнения челленджей
+            total_challenges = await db.challenges.count_documents({})
+            completed_challenges = await db.submissions.count_documents({"status": "approved"})
+            
+            # Статистика категорий
+            categories = await db.categories.find().to_list(length=100)
+            category_stats = {}
+            
+            for category in categories:
+                cat_id = category["_id"]
+                challenges_count = await db.challenges.count_documents({"category_id": cat_id})
+                completed_count = await db.submissions.count_documents({
+                    "challenge_id": {"$in": [c["_id"] async for c in db.challenges.find({"category_id": cat_id})]},
                     "status": "approved"
                 })
                 
-                completed_in_category += submissions_count
+                category_stats[category["name"]] = {
+                    "challenges_count": challenges_count,
+                    "completed_count": completed_count
+                }
             
-            category_stats[category_name] = {
-                "challenges_count": challenges_count,
-                "completed_count": completed_in_category
-            }
-        
-        # Получение среднего времени ответа за последнюю неделю
-        submissions = await db.submissions.find({
-            "status": {"$in": ["approved", "rejected"]},
-            "submitted_at": {"$gte": now - timedelta(days=7)}
-        }).to_list(length=None)
-        
-        avg_response_time = 0
-        if submissions:
-            response_times = []
-            for submission in submissions:
-                if submission.get("reviewed_at"):
-                    response_time = submission["reviewed_at"] - submission["submitted_at"]
-                    response_times.append(response_time.total_seconds() / 3600)
+            # Статистика по времени ответа на задания
+            submissions = await db.submissions.find({"status": "approved", "reviewed_at": {"$exists": True}}).to_list(length=None)
             
-            if response_times:
-                avg_response_time = sum(response_times) / len(response_times)
-        
-        stats["avg_response_time_hours"] = avg_response_time
-        
-        # Расчет метрик удержания
-        retention_1d = (active_users_24h / total_users * 100) if total_users > 0 else 0
-        retention_7d = (active_users_7d / total_users * 100) if total_users > 0 else 0
-        retention_21d = (active_users_21d / total_users * 100) if total_users > 0 else 0
-        
-        # Статистика по пользователям с подпиской на канал
-        subscribed_users = await db.users.count_documents({"subscription": True})
-        subscription_rate = (subscribed_users / total_users * 100) if total_users > 0 else 0
-        
-        # Получение демографических данных
-        gender_stats = {
-            "male": await db.users.count_documents({"gender": "male"}),
-            "female": await db.users.count_documents({"gender": "female"}),
-            "unknown": await db.users.count_documents({"gender": None})
-        }
-        
-        age_stats = {
-            "under18": await db.users.count_documents({"age": "under18"}),
-            "18-24": await db.users.count_documents({"age": "18-24"}),
-            "25-34": await db.users.count_documents({"age": "25-34"}),
-            "35-44": await db.users.count_documents({"age": "35-44"}),
-            "45plus": await db.users.count_documents({"age": "45plus"}),
-            "unknown": await db.users.count_documents({"age": None})
-        }
-        
-        # Формирование текста статистики (основные метрики)
-        text = (
-            f"📊 Основные метрики Sparkaph:\n\n"
-            f"👥 Пользователи:\n"
-            f"• Всего: {stats['total_users']}\n"
-            f"• Активных за 24ч (DAU): {stats['active_users_24h']}\n"
-            f"• Активных за неделю (WAU): {stats['active_users_7d']}\n"
-            f"• Активных за 3 недели: {stats['active_users_21d']}\n"
-            f"• Новых за 24ч: {stats['new_users_24h']}\n\n"
+            avg_response_time = 0
+            if submissions:
+                response_times = []
+                for submission in submissions:
+                    if submission.get("reviewed_at"):
+                        response_time = submission["reviewed_at"] - submission["submitted_at"]
+                        response_times.append(response_time.total_seconds() / 3600)
+                
+                if response_times:
+                    avg_response_time = sum(response_times) / len(response_times)
             
-            f"🎯 Челленджи:\n"
-            f"• Всего выполнено: {stats['completed_challenges_total']}\n"
-            f"• Выполнено за 24ч: {stats['completed_challenges_24h']}\n"
-            f"• Выполнено за неделю: {stats['completed_challenges_7d']}\n\n"
+            # Расчет метрик удержания
+            retention_1d = (active_users_24h / total_users * 100) if total_users > 0 else 0
+            retention_7d = (active_users_7d / total_users * 100) if total_users > 0 else 0
+            retention_30d = (active_users_30d / total_users * 100) if total_users > 0 else 0
             
-            f"⏱ Метрики времени:\n"
-            f"• Среднее время проверки: {avg_response_time:.1f} ч\n\n"
+            # Статистика по пользователям с подпиской на канал
+            subscribed_users = await db.users.count_documents({"subscription": True})
+            subscription_rate = (subscribed_users / total_users * 100) if total_users > 0 else 0
             
-            f"📈 Удержание:\n"
-            f"• 1 день: {retention_1d:.1f}%\n"
-            f"• 7 дней: {retention_7d:.1f}%\n"
-            f"• 21 день: {retention_21d:.1f}%\n\n"
+            # Создаем текст отчета
+            text = (
+                f"📊 **Общая статистика**\n\n"
+                f"👥 **Пользователи:**\n"
+                f"• Всего: {total_users}\n"
+                f"• Активные (24ч): {active_users_24h} ({retention_1d:.1f}%)\n"
+                f"• Активные (7д): {active_users_7d} ({retention_7d:.1f}%)\n"
+                f"• Активные (30д): {active_users_30d} ({retention_30d:.1f}%)\n"
+                f"• С активными челленджами: {users_with_challenges}\n\n"
+                
+                f"🎯 **Челленджи:**\n"
+                f"• Всего: {total_challenges}\n"
+                f"• Выполнено: {completed_challenges}\n"
+                f"• Процент выполнения: {(completed_challenges / total_challenges * 100) if total_challenges > 0 else 0:.1f}%\n\n"
+                
+                f"⏱ **Метрики:**\n"
+                f"• Среднее время проверки: {avg_response_time:.1f} часов\n"
+                f"• Подписались на канал: {subscribed_users} ({subscription_rate:.1f}%)\n"
+            )
             
-            f"📢 Подписка на канал: {subscription_rate:.1f}%\n\n"
-        )
-        
-        # Отправляем основную статистику
-        await message.answer(text)
-        
-        # Формируем статистику по категориям
-        category_text = "📋 Статистика по категориям:\n\n"
-        for name, data in category_stats.items():
-            category_text += f"• {name}: {data['completed_count']} выполнено из {data['challenges_count']} челленджей\n"
-        
-        await message.answer(category_text)
-        
-        # Формируем демографическую статистику
-        demo_text = (
-            f"👤 Демографические данные:\n\n"
-            f"Пол:\n"
-            f"• Мужской: {gender_stats['male']} ({gender_stats['male']/total_users*100:.1f}%)\n"
-            f"• Женский: {gender_stats['female']} ({gender_stats['female']/total_users*100:.1f}%)\n"
-            f"• Не указан: {gender_stats['unknown']} ({gender_stats['unknown']/total_users*100:.1f}%)\n\n"
+            await message.answer(text)
             
-            f"Возраст:\n"
-            f"• до 18: {age_stats['under18']} ({age_stats['under18']/total_users*100:.1f}%)\n"
-            f"• 18-24: {age_stats['18-24']} ({age_stats['18-24']/total_users*100:.1f}%)\n"
-            f"• 25-34: {age_stats['25-34']} ({age_stats['25-34']/total_users*100:.1f}%)\n"
-            f"• 35-44: {age_stats['35-44']} ({age_stats['35-44']/total_users*100:.1f}%)\n"
-            f"• 45+: {age_stats['45plus']} ({age_stats['45plus']/total_users*100:.1f}%)\n"
-            f"• Не указан: {age_stats['unknown']} ({age_stats['unknown']/total_users*100:.1f}%)\n"
-        )
-        
-        await message.answer(demo_text)
+            # Формируем статистику по категориям
+            category_text = "📋 **Статистика по категориям:**\n\n"
+            for name, data in category_stats.items():
+                category_text += f"• {name}: {data['completed_count']} выполнено из {data['challenges_count']} челленджей\n"
+            
+            await message.answer(category_text)
+            
+        except Exception as e:
+            logger.error(f"Ошибка при сборе статистики: {e}")
+            await message.answer(f"Произошла ошибка при сборе статистики: {e}")
+            await message.answer("Попробуйте позже или обратитесь к разработчику.")
         
     except Exception as e:
-        logger.error(f"Ошибка при показе статистики: {e}")
-        await message.answer(f"Произошла ошибка при сборе статистики: {e}")
-        await message.answer("Попробуйте позже или обратитесь к разработчику.")
+        logger.error(f"Общая ошибка в команде /stats: {e}")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчики управления категориями
 @dp.message(F.text == "📋 Управление категориями")
@@ -921,12 +1022,13 @@ async def process_challenge_max_users(message: Message, state: FSMContext):
                 f"Макс. пользователей: {max_users}"
             )
         else:
-            await message.answer("Не удалось сохранить челлендж. Попробуйте еще раз.")
+            await message.answer("❌ Не удалось добавить челлендж. Пожалуйста, попробуйте позже.")
         
+        # Очищаем состояние
         await state.clear()
     except Exception as e:
-        logger.error(f"Ошибка при сохранении челленджа: {e}")
-        await message.answer(f"Произошла ошибка: {e}")
+        logger.error(f"Ошибка при добавлении челленджа: {e}")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
         await state.clear()
 
 # Обработчик нажатия кнопки добавления категории
@@ -1016,11 +1118,56 @@ async def process_category_description(message: Message, state: FSMContext):
 # Основная функция
 async def main():
     try:
-        await dp.start_polling(bot)
+        # Инициализируем MongoDB
+        await init_mongodb()
+        
+        # Настраиваем параметры polling для избежания конфликтов
+        dp.startup.register(on_startup)
+        dp.shutdown.register(on_shutdown)
+        
+        # Запускаем бота с настройками против конфликтов
+        await dp.start_polling(
+            bot,
+            allowed_updates=["message", "callback_query"],
+            polling_timeout=30,
+            reset_webhook=True  # Сбрасываем вебхук перед запуском
+        )
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {e}")
         raise
 
+async def on_startup(dispatcher):
+    """Действия при запуске бота"""
+    try:
+        # Сбрасываем все обновления, которые могли накопиться
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Бот успешно запущен")
+    except Exception as e:
+        logger.error(f"Ошибка при инициализации бота: {e}")
+
+async def on_shutdown(dispatcher):
+    """Действия при остановке бота"""
+    try:
+        # Закрываем соединение с MongoDB
+        if not MOCK_DB and 'mongo_client' in globals():
+            mongo_client.close()
+        logger.info("Бот остановлен")
+    except Exception as e:
+        logger.error(f"Ошибка при остановке бота: {e}")
+
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main()) 
+    import platform
+    
+    # Настройка для Windows
+    if platform.system() == 'Windows':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
+    # Запускаем бота
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}")
+        raise 
