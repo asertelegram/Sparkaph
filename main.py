@@ -10,7 +10,6 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('sparkaph.log'),
         logging.StreamHandler()
     ]
 )
@@ -56,14 +55,17 @@ async def start_bots():
             from influencer_bot import register_handlers as register_influencer_handlers
             register_influencer_handlers(dispatchers['influencer'])
         
-        # Запуск ботов
-        tasks = []
+        # Запуск ботов последовательно
         for bot_type, dp in dispatchers.items():
-            tasks.append(dp.start_polling(bots[bot_type]))
-            await asyncio.sleep(2)  # Добавляем задержку между запуском ботов
+            logger.info(f"Запуск бота {bot_type}...")
+            await dp.start_polling(bots[bot_type])
+            await asyncio.sleep(5)  # Увеличиваем задержку между запуском ботов
         
         logger.info(f"Запущены боты: {', '.join(bots.keys())}")
-        await asyncio.gather(*tasks)
+        
+        # Держим ботов запущенными
+        while True:
+            await asyncio.sleep(3600)  # Проверка каждый час
         
     except Exception as e:
         logger.error(f"Ошибка при запуске ботов: {e}")

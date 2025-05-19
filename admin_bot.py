@@ -1977,6 +1977,9 @@ async def show_bonus_settings(callback_query: types.CallbackQuery):
         reply_markup=keyboard
     )
 
+def register_handlers(dispatcher):
+    pass
+
 # Запуск бота
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)

@@ -1543,6 +1543,9 @@ async def main():
         logger.error(f"Критическая ошибка при запуске бота: {e}")
         raise
 
+def register_handlers(dispatcher):
+    pass
+
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main()) 
