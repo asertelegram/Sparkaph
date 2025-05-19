@@ -91,7 +91,10 @@ def main():
     try:
         # Запускаем healthcheck сервер
         healthcheck_thread = start_healthcheck()
-        logger.info("Healthcheck сервер запущен")
+        if not healthcheck_thread:
+            logger.error("Не удалось запустить healthcheck сервер")
+            sys.exit(1)
+        logger.info("Healthcheck сервер успешно запущен")
         
         # Получение и валидация токенов
         USER_BOT_TOKEN = validate_token(os.getenv('USER_BOT_TOKEN'), 'пользовательского')
