@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
+from healthcheck import start_healthcheck
 
 # Настройка логирования
 logging.basicConfig(
@@ -88,6 +89,10 @@ def run_bot_process(bot_type: str, token: str):
 def main():
     """Основная функция запуска ботов"""
     try:
+        # Запускаем healthcheck сервер
+        healthcheck_thread = start_healthcheck()
+        logger.info("Healthcheck сервер запущен")
+        
         # Получение и валидация токенов
         USER_BOT_TOKEN = validate_token(os.getenv('USER_BOT_TOKEN'), 'пользовательского')
         ADMIN_BOT_TOKEN = validate_token(os.getenv('ADMIN_BOT_TOKEN'), 'админ')
