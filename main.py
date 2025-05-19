@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import multiprocessing
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
@@ -26,59 +27,71 @@ INFLUENCER_BOT_TOKEN = os.getenv('INFLUENCER_BOT_TOKEN')
 # Получение типа бота
 BOT_TYPE = os.getenv('BOT_TYPE', 'all')
 
-async def start_bots():
+async def run_bot(bot_type: str, token: str):
     try:
-        # Инициализация ботов
-        bots = {}
-        if BOT_TYPE in ['user', 'all']:
-            bots['user'] = Bot(token=USER_BOT_TOKEN, parse_mode=ParseMode.HTML)
-        if BOT_TYPE in ['admin', 'all']:
-            bots['admin'] = Bot(token=ADMIN_BOT_TOKEN, parse_mode=ParseMode.HTML)
-        if BOT_TYPE in ['influencer', 'all']:
-            bots['influencer'] = Bot(token=INFLUENCER_BOT_TOKEN, parse_mode=ParseMode.HTML)
+        bot = Bot(token=token, parse_mode=ParseMode.HTML)
+        dp = Dispatcher()
         
-        # Инициализация диспетчеров
-        dispatchers = {}
-        for bot_type, bot in bots.items():
-            dispatchers[bot_type] = Dispatcher()
+        # Импорт и регистрация хендлеров
+        if bot_type == 'user':
+            from user_bot import register_handlers
+        elif bot_type == 'admin':
+            from admin_bot import register_handlers
+        elif bot_type == 'influencer':
+            from influencer_bot import register_handlers
+            
+        register_handlers(dp)
         
-        # Импорт хендлеров
-        if 'user' in bots:
-            from user_bot import register_handlers as register_user_handlers
-            register_user_handlers(dispatchers['user'])
-        
-        if 'admin' in bots:
-            from admin_bot import register_handlers as register_admin_handlers
-            register_admin_handlers(dispatchers['admin'])
-        
-        if 'influencer' in bots:
-            from influencer_bot import register_handlers as register_influencer_handlers
-            register_influencer_handlers(dispatchers['influencer'])
-        
-        # Запуск ботов последовательно
-        for bot_type, dp in dispatchers.items():
-            logger.info(f"Запуск бота {bot_type}...")
-            await dp.start_polling(bots[bot_type])
-            await asyncio.sleep(5)  # Увеличиваем задержку между запуском ботов
-        
-        logger.info(f"Запущены боты: {', '.join(bots.keys())}")
-        
-        # Держим ботов запущенными
-        while True:
-            await asyncio.sleep(3600)  # Проверка каждый час
+        logger.info(f"Запуск бота {bot_type}...")
+        await dp.start_polling(bot)
         
     except Exception as e:
-        logger.error(f"Ошибка при запуске ботов: {e}")
+        logger.error(f"Ошибка при запуске бота {bot_type}: {e}")
         raise
     finally:
-        # Закрытие ботов
-        for bot in bots.values():
-            await bot.session.close()
+        await bot.session.close()
+
+def start_bot_process(bot_type: str, token: str):
+    asyncio.run(run_bot(bot_type, token))
 
 if __name__ == "__main__":
     try:
-        asyncio.run(start_bots())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Боты остановлены")
+        processes = []
+        
+        if BOT_TYPE in ['user', 'all']:
+            p = multiprocessing.Process(
+                target=start_bot_process,
+                args=('user', USER_BOT_TOKEN)
+            )
+            processes.append(p)
+            p.start()
+            
+        if BOT_TYPE in ['admin', 'all']:
+            p = multiprocessing.Process(
+                target=start_bot_process,
+                args=('admin', ADMIN_BOT_TOKEN)
+            )
+            processes.append(p)
+            p.start()
+            
+        if BOT_TYPE in ['influencer', 'all']:
+            p = multiprocessing.Process(
+                target=start_bot_process,
+                args=('influencer', INFLUENCER_BOT_TOKEN)
+            )
+            processes.append(p)
+            p.start()
+            
+        # Ждем завершения всех процессов
+        for p in processes:
+            p.join()
+            
+    except KeyboardInterrupt:
+        logger.info("Получен сигнал завершения")
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}") 
+        logger.error(f"Критическая ошибка: {e}")
+    finally:
+        # Завершаем все процессы
+        for p in processes:
+            if p.is_alive():
+                p.terminate() 
