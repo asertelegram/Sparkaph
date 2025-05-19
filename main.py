@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import sys
-from typing import Optional
+from typing import Optional, Dict
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
@@ -46,20 +46,29 @@ if BOT_TYPE not in ['user', 'admin', 'influencer', 'all']:
     logger.error(f"Неверный тип бота: {BOT_TYPE}")
     sys.exit(1)
 
+# Словарь для хранения экземпляров ботов
+bots: Dict[str, Bot] = {}
+
+async def init_bot(bot_type: str, token: str) -> Bot:
+    """Инициализация бота с проверкой доступности"""
+    try:
+        bot = Bot(token=token, parse_mode=ParseMode.HTML)
+        bot_info = await bot.get_me()
+        logger.info(f"Бот {bot_type} (@{bot_info.username}) успешно подключен")
+        return bot
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка подключения к боту {bot_type}: {e}")
+        raise
+
 async def run_bot(bot_type: str, token: str, offset: int):
     """Запуск бота с обработкой ошибок"""
     bot = None
     try:
-        bot = Bot(token=token, parse_mode=ParseMode.HTML)
-        dp = Dispatcher()
+        # Инициализация бота
+        bot = await init_bot(bot_type, token)
+        bots[bot_type] = bot
         
-        # Проверка доступности бота
-        try:
-            bot_info = await bot.get_me()
-            logger.info(f"Бот {bot_type} (@{bot_info.username}) успешно подключен")
-        except TelegramAPIError as e:
-            logger.error(f"Ошибка подключения к боту {bot_type}: {e}")
-            raise
+        dp = Dispatcher()
         
         # Импорт и регистрация хендлеров
         try:
@@ -85,7 +94,7 @@ async def run_bot(bot_type: str, token: str, offset: int):
             polling_timeout=30,
             polling_interval=5.0,
             offset=offset,
-            drop_pending_updates=True  # Игнорируем накопившиеся обновления
+            drop_pending_updates=True
         )
         
     except Exception as e:
@@ -100,28 +109,38 @@ async def run_bot(bot_type: str, token: str, offset: int):
                 logger.error(f"Ошибка при закрытии сессии бота {bot_type}: {e}")
 
 async def start_bots():
-    """Запуск всех ботов с обработкой ошибок"""
+    """Последовательный запуск ботов с проверкой готовности"""
     try:
-        tasks = []
+        # Определяем порядок запуска ботов
+        bot_configs = [
+            ('user', USER_BOT_TOKEN, 0),
+            ('admin', ADMIN_BOT_TOKEN, 1000),
+            ('influencer', INFLUENCER_BOT_TOKEN, 2000)
+        ]
         
-        if BOT_TYPE in ['user', 'all']:
-            tasks.append(run_bot('user', USER_BOT_TOKEN, 0))
-            await asyncio.sleep(10)
-            
-        if BOT_TYPE in ['admin', 'all']:
-            tasks.append(run_bot('admin', ADMIN_BOT_TOKEN, 1000))
-            await asyncio.sleep(10)
-            
-        if BOT_TYPE in ['influencer', 'all']:
-            tasks.append(run_bot('influencer', INFLUENCER_BOT_TOKEN, 2000))
-            await asyncio.sleep(10)
+        # Фильтруем боты в зависимости от BOT_TYPE
+        if BOT_TYPE != 'all':
+            bot_configs = [config for config in bot_configs if config[0] == BOT_TYPE]
         
-        if not tasks:
+        if not bot_configs:
             logger.error("Нет ботов для запуска")
             return
         
-        # Запускаем все боты
-        await asyncio.gather(*tasks)
+        # Последовательно запускаем боты
+        for bot_type, token, offset in bot_configs:
+            try:
+                # Запускаем бота
+                await run_bot(bot_type, token, offset)
+                
+                # Ждем успешной инициализации
+                await asyncio.sleep(15)  # Увеличенная задержка между ботами
+                
+                logger.info(f"Бот {bot_type} успешно запущен и готов к работе")
+                
+            except Exception as e:
+                logger.error(f"Ошибка при запуске бота {bot_type}: {e}")
+                # Продолжаем с следующим ботом
+                continue
         
     except Exception as e:
         logger.error(f"Ошибка при запуске ботов: {e}")
