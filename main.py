@@ -49,7 +49,7 @@ async def run_bot(bot_type: str, token: str, offset: int):
             bot,
             allowed_updates=dp.resolve_used_update_types(),
             polling_timeout=30,
-            polling_interval=3.0,
+            polling_interval=5.0,  # Увеличенный интервал
             offset=offset
         )
         
@@ -65,15 +65,15 @@ async def start_bots():
         
         if BOT_TYPE in ['user', 'all']:
             tasks.append(run_bot('user', USER_BOT_TOKEN, 0))
-            await asyncio.sleep(5)  # Задержка между запуском ботов
+            await asyncio.sleep(10)  # Увеличенная задержка
             
         if BOT_TYPE in ['admin', 'all']:
             tasks.append(run_bot('admin', ADMIN_BOT_TOKEN, 1000))
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
             
         if BOT_TYPE in ['influencer', 'all']:
             tasks.append(run_bot('influencer', INFLUENCER_BOT_TOKEN, 2000))
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
         
         # Запускаем все боты
         await asyncio.gather(*tasks)
