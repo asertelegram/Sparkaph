@@ -58,8 +58,9 @@ async def start_bots():
         
         # Запуск ботов
         tasks = []
-        for bot_type, (bot, dp) in bots.items():
-            tasks.append(dp.start_polling(bot))
+        for bot_type, dp in dispatchers.items():
+            tasks.append(dp.start_polling(bots[bot_type]))
+            await asyncio.sleep(2)  # Добавляем задержку между запуском ботов
         
         logger.info(f"Запущены боты: {', '.join(bots.keys())}")
         await asyncio.gather(*tasks)
