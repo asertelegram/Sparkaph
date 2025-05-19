@@ -34,6 +34,38 @@ dp = Dispatcher()
 # Подключение к MongoDB
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 
+# Класс-заглушка для базы данных
+class MockDatabase:
+    def __init__(self):
+        self.collections = {}
+    
+    def __getattr__(self, name):
+        if name not in self.collections:
+            self.collections[name] = MockCollection()
+        return self.collections[name]
+
+class MockCollection:
+    async def find_one(self, *args, **kwargs):
+        return None
+    
+    async def find(self, *args, **kwargs):
+        return []
+    
+    async def count_documents(self, *args, **kwargs):
+        return 0
+    
+    async def insert_one(self, *args, **kwargs):
+        return None
+    
+    async def update_one(self, *args, **kwargs):
+        return None
+    
+    async def delete_one(self, *args, **kwargs):
+        return None
+    
+    async def create_index(self, *args, **kwargs):
+        return None
+
 # Инициализация MongoDB клиента
 try:
     client = AsyncIOMotorClient(MONGODB_URI)
@@ -397,6 +429,129 @@ async def edit_challenge(callback: CallbackQuery, state: FSMContext):
         
     except Exception as e:
         logger.error(f"Ошибка при редактировании челленджа: {e}")
+        await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик редактирования текста челленджа
+@dp.callback_query(lambda c: c.data == "edit_text")
+async def edit_challenge_text(callback: CallbackQuery, state: FSMContext):
+    try:
+        await state.set_state(InfluencerStates.waiting_for_edit_text)
+        await callback.message.edit_text(
+            "Введите новый текст челленджа:"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании текста челленджа: {e}")
+        await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик ввода нового текста челленджа
+@dp.message(InfluencerStates.waiting_for_edit_text)
+async def process_edit_text(message: Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        challenge_id = data.get("editing_challenge_id")
+        
+        if not challenge_id:
+            await message.answer("Ошибка: не найден ID челленджа")
+            await state.clear()
+            return
+        
+        # Обновляем текст челленджа
+        await db.challenges.update_one(
+            {"_id": ObjectId(challenge_id)},
+            {"$set": {"text": message.text}}
+        )
+        
+        await message.answer("✅ Текст челленджа успешно обновлен!")
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке нового текста челленджа: {e}")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик редактирования описания челленджа
+@dp.callback_query(lambda c: c.data == "edit_description")
+async def edit_challenge_description(callback: CallbackQuery, state: FSMContext):
+    try:
+        await state.set_state(InfluencerStates.waiting_for_edit_description)
+        await callback.message.edit_text(
+            "Введите новое описание челленджа:"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании описания челленджа: {e}")
+        await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик ввода нового описания челленджа
+@dp.message(InfluencerStates.waiting_for_edit_description)
+async def process_edit_description(message: Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        challenge_id = data.get("editing_challenge_id")
+        
+        if not challenge_id:
+            await message.answer("Ошибка: не найден ID челленджа")
+            await state.clear()
+            return
+        
+        # Обновляем описание челленджа
+        await db.challenges.update_one(
+            {"_id": ObjectId(challenge_id)},
+            {"$set": {"description": message.text}}
+        )
+        
+        await message.answer("✅ Описание челленджа успешно обновлено!")
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке нового описания челленджа: {e}")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик редактирования типа челленджа
+@dp.callback_query(lambda c: c.data == "edit_type")
+async def edit_challenge_type(callback: CallbackQuery, state: FSMContext):
+    try:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="📸 Фото", callback_data="edit_type_photo"),
+                    InlineKeyboardButton(text="🎥 Видео", callback_data="edit_type_video")
+                ],
+                [InlineKeyboardButton(text="📝 Текст", callback_data="edit_type_text")]
+            ]
+        )
+        
+        await callback.message.edit_text(
+            "Выберите новый тип ответа для челленджа:",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании типа челленджа: {e}")
+        await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик выбора нового типа челленджа
+@dp.callback_query(lambda c: c.data.startswith("edit_type_"))
+async def process_edit_type(callback: CallbackQuery, state: FSMContext):
+    try:
+        data = await state.get_data()
+        challenge_id = data.get("editing_challenge_id")
+        
+        if not challenge_id:
+            await callback.answer("Ошибка: не найден ID челленджа")
+            await state.clear()
+            return
+        
+        new_type = callback.data.split("_")[2]
+        
+        # Обновляем тип челленджа
+        await db.challenges.update_one(
+            {"_id": ObjectId(challenge_id)},
+            {"$set": {"type": new_type}}
+        )
+        
+        await callback.message.edit_text("✅ Тип челленджа успешно обновлен!")
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке нового типа челленджа: {e}")
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик удаления челленджа
@@ -1512,6 +1667,19 @@ async def back_to_integrations(callback: CallbackQuery):
         logger.error(f"Ошибка при возврате к интеграциям: {e}")
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
+# Функция для получения текущего челленджа недели
+async def get_weekly_challenge(category_id: str) -> Optional[Dict]:
+    try:
+        current_time = datetime.now(UTC)
+        weekly_challenge = await db.weekly_challenges.find_one({
+            "category_id": category_id,
+            "end_date": {"$gt": current_time}
+        })
+        return weekly_challenge
+    except Exception as e:
+        logger.error(f"Ошибка при получении челленджа недели: {e}")
+        return None
+
 # Инициализация базы данных
 async def init_db():
     try:
@@ -1548,7 +1716,55 @@ async def main():
         raise
 
 def register_handlers(dispatcher):
-    pass
+    # Основные команды
+    dispatcher.message.register(cmd_start, Command("start"))
+    
+    # Обработчики кнопок меню
+    dispatcher.message.register(add_challenge, lambda m: m.text == "➕ Добавить челлендж")
+    dispatcher.message.register(show_my_challenges, lambda m: m.text == "📋 Мои челленджи")
+    dispatcher.message.register(manage_challenges, lambda m: m.text == "⚙️ Управление челленджами")
+    dispatcher.message.register(show_scheduled_challenges, lambda m: m.text == "📅 Запланированные")
+    dispatcher.message.register(show_statistics, lambda m: m.text == "📊 Статистика")
+    dispatcher.message.register(manage_templates, lambda m: m.text == "📝 Шаблоны")
+    dispatcher.message.register(manage_weekly_challenge, lambda m: m.text == "🎯 Челлендж недели")
+    dispatcher.message.register(manage_integrations, lambda m: m.text == "📱 Интеграции")
+    
+    # Обработчики состояний FSM
+    dispatcher.message.register(process_challenge_text, InfluencerStates.waiting_for_challenge_text)
+    dispatcher.message.register(process_challenge_type, InfluencerStates.waiting_for_challenge_type)
+    dispatcher.message.register(process_challenge_description, InfluencerStates.waiting_for_challenge_description)
+    dispatcher.message.register(process_edit_text, InfluencerStates.waiting_for_edit_text)
+    dispatcher.message.register(process_edit_description, InfluencerStates.waiting_for_edit_description)
+    dispatcher.message.register(process_archive_reason, InfluencerStates.waiting_for_archive_reason)
+    dispatcher.message.register(process_schedule_date, InfluencerStates.waiting_for_schedule_date)
+    dispatcher.message.register(process_schedule_time, InfluencerStates.waiting_for_schedule_time)
+    dispatcher.message.register(process_template_name, InfluencerStates.waiting_for_template_name)
+    dispatcher.message.register(process_template_text, InfluencerStates.waiting_for_template_text)
+    dispatcher.message.register(process_template_type, InfluencerStates.waiting_for_template_type)
+    dispatcher.message.register(process_template_description, InfluencerStates.waiting_for_template_description)
+    
+    # Обработчики callback-запросов
+    dispatcher.callback_query.register(edit_challenge, lambda c: c.data.startswith("edit_"))
+    dispatcher.callback_query.register(delete_challenge, lambda c: c.data.startswith("delete_"))
+    dispatcher.callback_query.register(archive_challenge, lambda c: c.data.startswith("archive_"))
+    dispatcher.callback_query.register(schedule_challenge, lambda c: c.data.startswith("schedule_"))
+    dispatcher.callback_query.register(edit_challenge_text, lambda c: c.data == "edit_text")
+    dispatcher.callback_query.register(edit_challenge_description, lambda c: c.data == "edit_description")
+    dispatcher.callback_query.register(edit_challenge_type, lambda c: c.data == "edit_type")
+    dispatcher.callback_query.register(process_edit_type, lambda c: c.data.startswith("edit_type_"))
+    dispatcher.callback_query.register(create_template, lambda c: c.data == "create_template")
+    dispatcher.callback_query.register(use_template, lambda c: c.data.startswith("use_template_"))
+    dispatcher.callback_query.register(delete_template, lambda c: c.data.startswith("delete_template_"))
+    dispatcher.callback_query.register(set_weekly_challenge, lambda c: c.data.startswith("set_weekly_"))
+    dispatcher.callback_query.register(show_weekly_stats, lambda c: c.data == "weekly_stats")
+    dispatcher.callback_query.register(end_weekly_challenge, lambda c: c.data == "end_weekly")
+    dispatcher.callback_query.register(integrate_tiktok, lambda c: c.data == "integrate_tiktok")
+    dispatcher.callback_query.register(integrate_instagram, lambda c: c.data == "integrate_instagram")
+    dispatcher.callback_query.register(disable_tiktok, lambda c: c.data == "disable_tiktok")
+    dispatcher.callback_query.register(disable_instagram, lambda c: c.data == "disable_instagram")
+    dispatcher.callback_query.register(back_to_integrations, lambda c: c.data == "back_to_integrations")
+    dispatcher.callback_query.register(cover_generator, lambda c: c.data == "cover_generator")
+    dispatcher.callback_query.register(create_cover, lambda c: c.data.startswith("generate_cover_"))
 
 if __name__ == "__main__":
     import asyncio
