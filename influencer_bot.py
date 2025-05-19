@@ -22,8 +22,12 @@ logger = logging.getLogger(__name__)
 # Загрузка переменных окружения
 load_dotenv()
 
+# Получение токена из переменных окружения
+BOT_TOKEN = os.getenv("INFLUENCER_BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("INFLUENCER_BOT_TOKEN отсутствует в .env файле")
+
 # Инициализация бота и диспетчера
-BOT_TOKEN = "7859985411:AAELR49szKxwattEx6_mQ0bFDyMgJiBdrSE"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
