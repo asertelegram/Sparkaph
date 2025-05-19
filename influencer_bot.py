@@ -13,6 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
+from pymongo import MongoClient
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -28,8 +29,16 @@ dp = Dispatcher()
 
 # Подключение к MongoDB
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
-client = AsyncIOMotorClient(MONGODB_URI)
-db = client.sparkaph
+
+# Инициализация MongoDB клиента
+try:
+    client = AsyncIOMotorClient(MONGODB_URI)
+    db = client["Sparkaph"]  # Используем единое название с большой буквы
+    logger.info("MongoDB клиент инициализирован")
+except Exception as e:
+    logger.error(f"Ошибка при инициализации базы данных: {e}")
+    # Создаем заглушку для базы данных
+    db = MockDatabase()
 
 # Состояния для FSM
 class InfluencerStates(StatesGroup):
@@ -140,7 +149,7 @@ async def cmd_start(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик добавления челленджа
-@dp.message(F.text == "➕ Добавить челлендж")
+@dp.message(lambda m: m.text == "➕ Добавить челлендж")
 async def add_challenge(message: Message, state: FSMContext):
     try:
         user_id = message.from_user.id
@@ -185,13 +194,13 @@ async def process_challenge_text(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик выбора типа челленджа
-@dp.callback_query(InfluencerStates.waiting_for_challenge_type)
-async def process_challenge_type(callback: CallbackQuery, state: FSMContext):
+@dp.message(InfluencerStates.waiting_for_challenge_type)
+async def process_challenge_type(message: Message, state: FSMContext):
     try:
-        challenge_type = callback.data.split("_")[1]
+        challenge_type = message.text.split("_")[1]
         await state.update_data(challenge_type=challenge_type)
         
-        await callback.message.edit_text(
+        await message.answer(
             "Введите описание челленджа:\n"
             "Например: 'Сделай фото или видео выполнения упражнения'"
         )
@@ -199,7 +208,7 @@ async def process_challenge_type(callback: CallbackQuery, state: FSMContext):
         
     except Exception as e:
         logger.error(f"Ошибка при обработке типа челленджа: {e}")
-        await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик ввода описания челленджа
 @dp.message(InfluencerStates.waiting_for_challenge_description)
@@ -238,7 +247,7 @@ async def process_challenge_description(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик просмотра своих челленджей
-@dp.message(F.text == "📋 Мои челленджи")
+@dp.message(lambda m: m.text == "📋 Мои челленджи")
 async def show_my_challenges(message: Message):
     try:
         user_id = message.from_user.id
@@ -281,7 +290,7 @@ async def show_my_challenges(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик управления челленджами
-@dp.message(F.text == "⚙️ Управление челленджами")
+@dp.message(lambda m: m.text == "⚙️ Управление челленджами")
 async def manage_challenges(message: Message):
     try:
         user_id = message.from_user.id
@@ -352,7 +361,7 @@ async def manage_challenges(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик редактирования челленджа
-@dp.callback_query(F.data.startswith("edit_"))
+@dp.callback_query(lambda c: c.data.startswith("edit_"))
 async def edit_challenge(callback: CallbackQuery, state: FSMContext):
     try:
         challenge_id = callback.data.split("_")[1]
@@ -387,7 +396,7 @@ async def edit_challenge(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик удаления челленджа
-@dp.callback_query(F.data.startswith("delete_"))
+@dp.callback_query(lambda c: c.data.startswith("delete_"))
 async def delete_challenge(callback: CallbackQuery):
     try:
         challenge_id = callback.data.split("_")[1]
@@ -415,7 +424,7 @@ async def delete_challenge(callback: CallbackQuery):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик архивирования челленджа
-@dp.callback_query(F.data.startswith("archive_"))
+@dp.callback_query(lambda c: c.data.startswith("archive_"))
 async def archive_challenge(callback: CallbackQuery, state: FSMContext):
     try:
         challenge_id = callback.data.split("_")[1]
@@ -463,7 +472,7 @@ async def process_archive_reason(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик планирования челленджа
-@dp.callback_query(F.data.startswith("schedule_"))
+@dp.callback_query(lambda c: c.data.startswith("schedule_"))
 async def schedule_challenge(callback: CallbackQuery, state: FSMContext):
     try:
         challenge_id = callback.data.split("_")[1]
@@ -545,7 +554,7 @@ async def process_schedule_time(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик просмотра запланированных челленджей
-@dp.message(F.text == "📅 Запланированные")
+@dp.message(lambda m: m.text == "📅 Запланированные")
 async def show_scheduled_challenges(message: Message):
     try:
         user_id = message.from_user.id
@@ -582,7 +591,7 @@ async def show_scheduled_challenges(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик просмотра статистики
-@dp.message(F.text == "📊 Статистика")
+@dp.message(lambda m: m.text == "📊 Статистика")
 async def show_statistics(message: Message):
     try:
         user_id = message.from_user.id
@@ -741,7 +750,7 @@ async def show_statistics(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик управления шаблонами
-@dp.message(F.text == "📝 Шаблоны")
+@dp.message(lambda m: m.text == "📝 Шаблоны")
 async def manage_templates(message: Message):
     try:
         user_id = message.from_user.id
@@ -802,7 +811,7 @@ async def manage_templates(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик создания шаблона
-@dp.callback_query(F.data == "create_template")
+@dp.callback_query(lambda c: c.data == "create_template")
 async def create_template(callback: CallbackQuery, state: FSMContext):
     try:
         await state.set_state(InfluencerStates.waiting_for_template_name)
@@ -857,6 +866,7 @@ async def process_template_text(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик выбора типа шаблона
+@dp.message(InfluencerStates.waiting_for_template_type)
 @dp.callback_query(InfluencerStates.waiting_for_template_type)
 async def process_template_type(callback: CallbackQuery, state: FSMContext):
     try:
@@ -908,7 +918,7 @@ async def process_template_description(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик использования шаблона
-@dp.callback_query(F.data.startswith("use_template_"))
+@dp.callback_query(lambda c: c.data.startswith("use_template_"))
 async def use_template(callback: CallbackQuery, state: FSMContext):
     try:
         template_id = callback.data.split("_")[2]
@@ -953,7 +963,7 @@ async def use_template(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик удаления шаблона
-@dp.callback_query(F.data.startswith("delete_template_"))
+@dp.callback_query(lambda c: c.data.startswith("delete_template_"))
 async def delete_template(callback: CallbackQuery):
     try:
         template_id = callback.data.split("_")[2]
@@ -981,7 +991,7 @@ async def delete_template(callback: CallbackQuery):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик для челленджа недели
-@dp.message(F.text == "🎯 Челлендж недели")
+@dp.message(lambda m: m.text == "🎯 Челлендж недели")
 async def manage_weekly_challenge(message: Message):
     try:
         user_id = message.from_user.id
@@ -1045,7 +1055,7 @@ async def manage_weekly_challenge(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик для интеграций
-@dp.message(F.text == "📱 Интеграции")
+@dp.message(lambda m: m.text == "📱 Интеграции")
 async def manage_integrations(message: Message):
     try:
         user_id = message.from_user.id
@@ -1087,7 +1097,7 @@ async def manage_integrations(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик для генератора обложек
-@dp.callback_query(F.data == "cover_generator")
+@dp.callback_query(lambda c: c.data == "cover_generator")
 async def cover_generator(callback: CallbackQuery, state: FSMContext):
     try:
         user_id = callback.from_user.id
@@ -1132,7 +1142,7 @@ async def cover_generator(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик для создания обложки
-@dp.callback_query(F.data.startswith("generate_cover_"))
+@dp.callback_query(lambda c: c.data.startswith("generate_cover_"))
 async def create_cover(callback: CallbackQuery):
     try:
         submission_id = callback.data.split("_")[2]
@@ -1155,7 +1165,7 @@ async def create_cover(callback: CallbackQuery):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик для установки челленджа недели
-@dp.callback_query(F.data.startswith("set_weekly_"))
+@dp.callback_query(lambda c: c.data.startswith("set_weekly_"))
 async def set_weekly_challenge(callback: CallbackQuery):
     try:
         challenge_id = callback.data.split("_")[2]
@@ -1199,7 +1209,7 @@ async def set_weekly_challenge(callback: CallbackQuery):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик для статистики челленджа недели
-@dp.callback_query(F.data == "weekly_stats")
+@dp.callback_query(lambda c: c.data == "weekly_stats")
 async def show_weekly_stats(callback: CallbackQuery):
     try:
         user_id = callback.from_user.id
@@ -1277,7 +1287,7 @@ async def show_weekly_stats(callback: CallbackQuery):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик для завершения челленджа недели
-@dp.callback_query(F.data == "end_weekly")
+@dp.callback_query(lambda c: c.data == "end_weekly")
 async def end_weekly_challenge(callback: CallbackQuery):
     try:
         user_id = callback.from_user.id
@@ -1311,7 +1321,7 @@ async def end_weekly_challenge(callback: CallbackQuery):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик для интеграции с TikTok
-@dp.callback_query(F.data == "integrate_tiktok")
+@dp.callback_query(lambda c: c.data == "integrate_tiktok")
 async def integrate_tiktok(callback: CallbackQuery, state: FSMContext):
     try:
         user_id = callback.from_user.id
@@ -1359,7 +1369,7 @@ async def integrate_tiktok(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик для интеграции с Instagram
-@dp.callback_query(F.data == "integrate_instagram")
+@dp.callback_query(lambda c: c.data == "integrate_instagram")
 async def integrate_instagram(callback: CallbackQuery, state: FSMContext):
     try:
         user_id = callback.from_user.id
@@ -1407,7 +1417,7 @@ async def integrate_instagram(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик для отключения TikTok
-@dp.callback_query(F.data == "disable_tiktok")
+@dp.callback_query(lambda c: c.data == "disable_tiktok")
 async def disable_tiktok(callback: CallbackQuery):
     try:
         user_id = callback.from_user.id
@@ -1432,7 +1442,7 @@ async def disable_tiktok(callback: CallbackQuery):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик для отключения Instagram
-@dp.callback_query(F.data == "disable_instagram")
+@dp.callback_query(lambda c: c.data == "disable_instagram")
 async def disable_instagram(callback: CallbackQuery):
     try:
         user_id = callback.from_user.id
@@ -1457,7 +1467,7 @@ async def disable_instagram(callback: CallbackQuery):
         await callback.message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик возврата к интеграциям
-@dp.callback_query(F.data == "back_to_integrations")
+@dp.callback_query(lambda c: c.data == "back_to_integrations")
 async def back_to_integrations(callback: CallbackQuery):
     try:
         user_id = callback.from_user.id

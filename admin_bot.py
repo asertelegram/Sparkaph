@@ -9,14 +9,26 @@ import ssl
 import certifi
 import urllib.parse
 import dns.resolver
+import asyncio
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import MongoClient
+from cover_generator import cover_generator
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from security import SecuritySystem
+from notifications import NotificationSystem
+from achievements import AchievementSystem, Achievement, AchievementType, AchievementReward
+from notifications import NotificationType
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.types import ParseMode, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
 
 # Настройка логирования
 logging.basicConfig(
@@ -43,7 +55,8 @@ except (ValueError, TypeError) as e:
 # Инициализация бота и диспетчера
 try:
     bot = Bot(token=os.getenv("ADMIN_BOT_TOKEN"))
-    dp = Dispatcher()
+    storage = MemoryStorage()
+    dp = Dispatcher(bot, storage=storage)
 except Exception as e:
     logger.error(f"Ошибка инициализации бота: {e}")
     raise
@@ -207,34 +220,9 @@ async def init_mongodb():
         db = MockDB()
         MOCK_DB = True
 
-# Обработчик для отладки MongoDB подключения
-@dp.message(Command("dbtest"))
-async def cmd_dbtest(message: Message):
-    try:
-        if message.from_user.id != ADMIN_ID:
-            await message.answer("Эта команда доступна только администратору")
-            return
-        
-        await message.answer("Проверка подключения к MongoDB...")
-        
-        if MOCK_DB:
-            await message.answer("⚠️ Используется заглушка вместо MongoDB")
-            return
-        
-        # Проверяем подключение
-        try:
-            # Используем более короткий таймаут для проверки
-            result = await mongo_client.admin.command("ping", serverSelectionTimeoutMS=5000)
-            await message.answer(f"✅ MongoDB подключение работает!\nРезультат: {result}")
-            
-            # Проверяем доступность базы
-            collections = await db.list_collection_names()
-            await message.answer(f"📊 Доступные коллекции: {', '.join(collections) if collections else 'нет'}")
-        except Exception as e:
-            await message.answer(f"❌ Ошибка подключения к MongoDB: {e}")
-    except Exception as e:
-        logger.error(f"Ошибка при проверке MongoDB: {e}")
-        await message.answer(f"Произошла ошибка: {e}")
+# Инициализация систем безопасности и уведомлений
+security = SecuritySystem(bot, db)
+notifications = NotificationSystem(bot, db)
 
 # Состояния
 class AdminStates(StatesGroup):
@@ -246,10 +234,70 @@ class AdminStates(StatesGroup):
     waiting_for_challenge_max_users = State()
     waiting_for_reject_reason = State()  # Ожидание причины отказа
     waiting_for_user_points = State()
+    waiting_for_influencer_id = State()
+    waiting_for_influencer_category = State()
+    waiting_for_challenges_file = State()
+    waiting_for_cover_text = State()
+    waiting_for_cover_style = State()
+    waiting_for_cover_format = State()
+    waiting_for_challenge_name = State()
+    waiting_for_challenge_points = State()
+    waiting_for_influencer_username = State()
+    waiting_for_influencer_platform = State()
+
+class AchievementStates(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_description = State()
+    waiting_for_type = State()
+    waiting_for_requirements = State()
+    waiting_for_rewards = State()
+    waiting_for_expires_at = State()
+    waiting_for_season = State()
+    waiting_for_collection = State()
+    waiting_for_event = State()
+    waiting_for_special = State()
+    waiting_for_hidden = State()
+    waiting_for_points = State()
+    waiting_for_badge = State()
+    waiting_for_title = State()
+    waiting_for_bonus = State()
+    waiting_for_bonus_duration = State()
 
 # Вспомогательная функция для сохранения ID сообщения и submission_id
 async def save_temp_data(state: FSMContext, submission_id: str, message_id: int):
     await state.update_data(submission_id=submission_id, message_id=message_id)
+
+# Middleware для проверки безопасности
+@dp.middleware()
+async def security_middleware(handler, event, data):
+    if isinstance(event, types.Message):
+        user_id = event.from_user.id
+        
+        # Проверка прав администратора
+        admin = await db.admins.find_one({"user_id": user_id})
+        if not admin:
+            await event.answer("У вас нет прав администратора.")
+            return
+        
+        # Проверка rate limit
+        allowed, wait_time = await security.check_rate_limit(user_id, "message")
+        if not allowed:
+            await event.answer(f"Слишком много сообщений. Подождите {wait_time} секунд.")
+            return
+        
+        # Проверка на спам
+        if event.text:
+            is_safe, reason = await security.check_spam(event.text)
+            if not is_safe:
+                await security.log_security_event(
+                    user_id,
+                    "admin_spam_detected",
+                    {"text": event.text, "reason": reason}
+                )
+                await event.answer("Сообщение заблокировано системой безопасности.")
+                return
+    
+    return await handler(event, data)
 
 # Обработчики команд
 @dp.message(Command("start"))
@@ -279,14 +327,17 @@ def get_admin_menu():
             [types.KeyboardButton(text="📊 Статистика")],
             [types.KeyboardButton(text="📋 Управление категориями")],
             [types.KeyboardButton(text="🎯 Управление челленджами")],
-            [types.KeyboardButton(text="👥 Управление пользователями")]
+            [types.KeyboardButton(text="👥 Управление пользователями")],
+            [types.KeyboardButton(text="👥 Управление инфлюенсерами")],
+            [types.KeyboardButton(text="📋 Массовое добавление челленджей")],
+            [types.KeyboardButton(text="🎨 Генератор обложек")]
         ],
         resize_keyboard=True
     )
     return keyboard
 
 # Обработчик проверки заданий
-@dp.message(F.text == "📝 Проверить задания")
+@dp.message(lambda m: m.text == "📝 Проверить задания")
 async def check_submissions(message: Message):
     try:
         if message.from_user.id != ADMIN_ID:
@@ -598,7 +649,7 @@ async def cmd_stats(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчики управления категориями
-@dp.message(F.text == "📋 Управление категориями")
+@dp.message(lambda m: m.text == "📋 Управление категориями")
 async def manage_categories(message: Message):
     try:
         if message.from_user.id != ADMIN_ID:
@@ -630,7 +681,7 @@ async def manage_categories(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчики управления челленджами
-@dp.message(F.text == "🎯 Управление челленджами")
+@dp.message(lambda m: m.text == "🎯 Управление челленджами")
 async def manage_challenges(message: Message):
     try:
         if message.from_user.id != ADMIN_ID:
@@ -664,7 +715,7 @@ async def manage_challenges(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчики управления пользователями
-@dp.message(F.text == "👥 Управление пользователями")
+@dp.message(lambda m: m.text == "👥 Управление пользователями")
 async def manage_users(message: Message):
     try:
         if message.from_user.id != ADMIN_ID:
@@ -698,7 +749,7 @@ async def manage_users(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчики callback-запросов
-@dp.callback_query(F.data.startswith("approve_"))
+@dp.callback_query(lambda c: c.data.startswith("approve_"))
 async def approve_submission(callback: CallbackQuery):
     try:
         if callback.from_user.id != ADMIN_ID:
@@ -737,39 +788,31 @@ async def approve_submission(callback: CallbackQuery):
             "✅ Твой челлендж одобрен! +20 очков"
         )
         
-        # Обновление сообщения с заданием - обрабатываем разные типы сообщений
+        # Автоматическая публикация в канал, если это фото или видео
         try:
-            if callback.message.photo:
-                await callback.message.edit_caption(
-                    caption=f"{callback.message.caption}\n\n✅ Одобрено",
-                    reply_markup=None
-                )
-            elif callback.message.video:
-                await callback.message.edit_caption(
-                    caption=f"{callback.message.caption}\n\n✅ Одобрено",
-                    reply_markup=None
-                )
-            elif callback.message.document:
-                await callback.message.edit_caption(
-                    caption=f"{callback.message.caption}\n\n✅ Одобрено",
-                    reply_markup=None
-                )
-            else:
-                await callback.message.edit_text(
-                    f"{callback.message.text}\n\n✅ Одобрено",
-                    reply_markup=None
+            channel_id = os.getenv("CHANNEL_ID")
+            if channel_id and submission.get("media"):
+                media_type = submission.get("media_type", "")
+                media_file_id = submission.get("media")
+                caption = f"Челлендж от @{submission.get('username', 'user')}\n\n{submission.get('text', '')}"
+                if "photo" in media_type:
+                    await bot.send_photo(channel_id, photo=media_file_id, caption=caption)
+                elif "video" in media_type:
+                    await bot.send_video(channel_id, video=media_file_id, caption=caption)
+                # Уведомление пользователю
+                await bot.send_message(
+                    submission["user_id"],
+                    "🎉 Твоё фото/видео опубликовано в официальном канале Sparkaph! Поздравляем!"
                 )
         except Exception as e:
-            logger.error(f"Ошибка при обновлении сообщения: {e}")
-            # В случае ошибки отправляем новое сообщение
-            await callback.message.answer("✅ Задание одобрено!")
+            logger.error(f"Ошибка при публикации в канал: {e}")
         
         await callback.answer("Задание одобрено!")
     except Exception as e:
         logger.error(f"Ошибка при одобрении задания: {e}")
         await callback.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
-@dp.callback_query(F.data.startswith("reject_"))
+@dp.callback_query(lambda c: c.data.startswith("reject_"))
 async def reject_submission(callback: CallbackQuery, state: FSMContext):
     try:
         if callback.from_user.id != ADMIN_ID:
@@ -874,7 +917,7 @@ async def process_reject_reason(message: Message, state: FSMContext):
         await state.clear()
 
 # Обработчик нажатия кнопки добавления челленджа
-@dp.callback_query(F.data == "add_challenge")
+@dp.callback_query(lambda c: c.data == "add_challenge")
 async def start_add_challenge(callback: CallbackQuery, state: FSMContext):
     try:
         if callback.from_user.id != ADMIN_ID:
@@ -954,7 +997,7 @@ async def process_challenge_description(message: Message, state: FSMContext):
         await state.clear()
 
 # Обработчик выбора категории для челленджа
-@dp.callback_query(AdminStates.waiting_for_challenge_category, F.data.startswith("select_category_"))
+@dp.callback_query(lambda c: c.data.startswith("select_category_"))
 async def process_challenge_category(callback: CallbackQuery, state: FSMContext):
     try:
         if callback.from_user.id != ADMIN_ID:
@@ -1032,7 +1075,7 @@ async def process_challenge_max_users(message: Message, state: FSMContext):
         await state.clear()
 
 # Обработчик нажатия кнопки добавления категории
-@dp.callback_query(F.data == "add_category")
+@dp.callback_query(lambda c: c.data == "add_category")
 async def start_add_category(callback: CallbackQuery, state: FSMContext):
     try:
         if callback.from_user.id != ADMIN_ID:
@@ -1115,11 +1158,500 @@ async def process_category_description(message: Message, state: FSMContext):
         await message.answer(f"Произошла ошибка: {e}")
         await state.clear()
 
+# Управление инфлюенсерами
+@dp.message_handler(commands=['manage_influencers'])
+async def manage_influencers(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("У вас нет доступа к этой команде.")
+        return
+    
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        types.InlineKeyboardButton("Добавить инфлюенсера", callback_data="add_influencer"),
+        types.InlineKeyboardButton("Удалить инфлюенсера", callback_data="remove_influencer"),
+        types.InlineKeyboardButton("Список инфлюенсеров", callback_data="list_influencers"),
+        types.InlineKeyboardButton("Статистика инфлюенсеров", callback_data="influencer_stats")
+    )
+    await message.answer("Управление инфлюенсерами:", reply_markup=keyboard)
+
+@dp.callback_query_handler(lambda c: c.data == "add_influencer")
+async def add_influencer_start(callback_query: types.CallbackQuery):
+    await callback_query.message.answer("Введите ID пользователя, которого хотите сделать инфлюенсером:")
+    await AdminStates.waiting_for_influencer_id.set()
+
+@dp.message_handler(state=AdminStates.waiting_for_influencer_id)
+async def add_influencer_id(message: types.Message, state: FSMContext):
+    try:
+        user_id = int(message.text)
+        # Проверяем существование пользователя
+        user = await db.users.find_one({"user_id": user_id})
+        if not user:
+            await message.answer("Пользователь не найден.")
+            await state.finish()
+            return
+        
+        # Показываем список категорий
+        categories = await db.categories.find({"status": "active"}).to_list(length=None)
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        for category in categories:
+            keyboard.add(types.InlineKeyboardButton(
+                category["name"],
+                callback_data=f"select_category_{category['_id']}"
+            ))
+        
+        await state.update_data(influencer_id=user_id)
+        await message.answer("Выберите категорию для инфлюенсера:", reply_markup=keyboard)
+        await AdminStates.waiting_for_influencer_category.set()
+    except ValueError:
+        await message.answer("Пожалуйста, введите корректный ID пользователя.")
+
+@dp.callback_query_handler(lambda c: c.data.startswith("select_category_"), state=AdminStates.waiting_for_influencer_category)
+async def add_influencer_category(callback_query: types.CallbackQuery, state: FSMContext):
+    category_id = ObjectId(callback_query.data.split("_")[-1])
+    data = await state.get_data()
+    user_id = data["influencer_id"]
+    
+    # Добавляем инфлюенсера
+    await db.influencers.insert_one({
+        "user_id": user_id,
+        "category_id": category_id,
+        "created_at": datetime.utcnow(),
+        "status": "active",
+        "permissions": ["create_challenges", "edit_challenges", "view_stats"]
+    })
+    
+    await callback_query.message.answer("Инфлюенсер успешно добавлен!")
+    await state.finish()
+
+@dp.callback_query_handler(lambda c: c.data == "remove_influencer")
+async def remove_influencer_start(callback_query: types.CallbackQuery):
+    influencers = await db.influencers.find({"status": "active"}).to_list(length=None)
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    
+    for influencer in influencers:
+        user = await db.users.find_one({"user_id": influencer["user_id"]})
+        category = await db.categories.find_one({"_id": influencer["category_id"]})
+        keyboard.add(types.InlineKeyboardButton(
+            f"{user['username']} - {category['name']}",
+            callback_data=f"remove_influencer_{influencer['user_id']}"
+        ))
+    
+    await callback_query.message.answer("Выберите инфлюенсера для удаления:", reply_markup=keyboard)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("remove_influencer_"))
+async def remove_influencer_confirm(callback_query: types.CallbackQuery):
+    user_id = int(callback_query.data.split("_")[-1])
+    await db.influencers.update_one(
+        {"user_id": user_id},
+        {"$set": {"status": "inactive"}}
+    )
+    await callback_query.message.answer("Инфлюенсер успешно удален!")
+
+@dp.callback_query_handler(lambda c: c.data == "list_influencers")
+async def list_influencers(callback_query: types.CallbackQuery):
+    influencers = await db.influencers.find({"status": "active"}).to_list(length=None)
+    if not influencers:
+        await callback_query.message.answer("Нет активных инфлюенсеров.")
+        return
+    
+    text = "Список активных инфлюенсеров:\n\n"
+    for influencer in influencers:
+        user = await db.users.find_one({"user_id": influencer["user_id"]})
+        category = await db.categories.find_one({"_id": influencer["category_id"]})
+        text += f"@{user['username']} - {category['name']}\n"
+    
+    await callback_query.message.answer(text)
+
+@dp.callback_query_handler(lambda c: c.data == "influencer_stats")
+async def influencer_stats(callback_query: types.CallbackQuery):
+    influencers = await db.influencers.find({"status": "active"}).to_list(length=None)
+    if not influencers:
+        await callback_query.message.answer("Нет активных инфлюенсеров.")
+        return
+    
+    text = "Статистика инфлюенсеров:\n\n"
+    for influencer in influencers:
+        user = await db.users.find_one({"user_id": influencer["user_id"]})
+        category = await db.categories.find_one({"_id": influencer["category_id"]})
+        
+        # Получаем статистику
+        challenges_count = await db.challenges.count_documents({
+            "created_by": influencer["user_id"]
+        })
+        active_challenges = await db.challenges.count_documents({
+            "created_by": influencer["user_id"],
+            "status": "active"
+        })
+        
+        text += f"@{user['username']} - {category['name']}\n"
+        text += f"Всего челленджей: {challenges_count}\n"
+        text += f"Активных челленджей: {active_challenges}\n\n"
+    
+    await callback_query.message.answer(text)
+
+# Массовое добавление челленджей
+@dp.message_handler(commands=['bulk_add_challenges'])
+async def bulk_add_challenges(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        await message.answer("У вас нет доступа к этой команде.")
+        return
+    
+    await message.answer(
+        "Отправьте файл с челленджами в формате CSV.\n"
+        "Формат: category_name,text,description,max_users\n"
+        "Пример: Фитнес,Пробежать 5км,Ежедневная пробежка,10"
+    )
+    await AdminStates.waiting_for_challenges_file.set()
+
+@dp.message_handler(content_types=['document'], state=AdminStates.waiting_for_challenges_file)
+async def process_challenges_file(message: types.Message, state: FSMContext):
+    if not message.document.file_name.endswith('.csv'):
+        await message.answer("Пожалуйста, отправьте файл в формате CSV.")
+        return
+    
+    # Скачиваем файл
+    file = await bot.get_file(message.document.file_id)
+    file_path = file.file_path
+    downloaded_file = await bot.download_file(file_path)
+    
+    # Читаем и обрабатываем файл
+    success_count = 0
+    error_count = 0
+    
+    for line in downloaded_file.read().decode().split('\n'):
+        if not line.strip():
+            continue
+        
+        try:
+            category_name, text, description, max_users = line.strip().split(',')
+            category = await db.categories.find_one({"name": category_name})
+            
+            if not category:
+                error_count += 1
+                continue
+            
+            await db.challenges.insert_one({
+                "category_id": category["_id"],
+                "text": text,
+                "description": description,
+                "max_users": int(max_users),
+                "taken_by": [],
+                "status": "active",
+                "created_at": datetime.utcnow(),
+                "created_by": message.from_user.id,
+                "is_active": True
+            })
+            success_count += 1
+        except Exception as e:
+            error_count += 1
+            continue
+    
+    await message.answer(
+        f"Обработка файла завершена!\n"
+        f"Успешно добавлено: {success_count}\n"
+        f"Ошибок: {error_count}"
+    )
+    await state.finish()
+
+# Добавляем команду для просмотра статистики системы
+@dp.message(Command("system_stats"))
+async def cmd_system_stats(message: Message):
+    try:
+        if message.from_user.id != ADMIN_ID:
+            return
+        
+        # Получаем отчет о производительности
+        report = await system_monitor.get_performance_report()
+        
+        if "error" in report:
+            await message.answer(f"Ошибка получения статистики: {report['error']}")
+            return
+        
+        # Формируем текст отчета
+        text = (
+            f"📊 **Статистика системы**\n\n"
+            f"⏱ Период: {report['period']}\n\n"
+            f"📈 **Средние значения:**\n"
+            f"• CPU: {report['average']['cpu_percent']}%\n"
+            f"• Память: {report['average']['memory_percent']}%\n"
+            f"• Диск: {report['average']['disk_percent']}%\n\n"
+            f"📉 **Пиковые значения:**\n"
+            f"• CPU: {report['peak']['cpu_percent']}%\n"
+            f"• Память: {report['peak']['memory_percent']}%\n"
+            f"• Диск: {report['peak']['disk_percent']}%\n\n"
+            f"⚠️ Количество алертов: {report['alerts_count']}"
+        )
+        
+        await message.answer(text)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении статистики системы: {e}")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Добавляем команду для оптимизации базы данных
+@dp.message(Command("optimize_db"))
+async def cmd_optimize_db(message: Message):
+    try:
+        if message.from_user.id != ADMIN_ID:
+            return
+        
+        await message.answer("🔄 Начинаю оптимизацию базы данных...")
+        
+        # Запускаем оптимизацию
+        await system_monitor.optimize_database()
+        
+        await message.answer("✅ Оптимизация базы данных завершена!")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при оптимизации базы данных: {e}")
+        await message.answer("Произошла ошибка при оптимизации. Пожалуйста, попробуйте позже.")
+
+# Добавляем команду для просмотра статистики производительности
+@dp.message(Command("performance"))
+async def cmd_performance(message: Message):
+    try:
+        if message.from_user.id != ADMIN_ID:
+            return
+        
+        # Получаем статистику производительности
+        stats = performance_monitor.get_statistics()
+        
+        text = (
+            f"⚡️ **Статистика производительности**\n\n"
+            f"⏱ Аптайм: {stats['uptime']} секунд\n"
+            f"📊 Количество запросов: {stats['requests_count']}\n"
+            f"⏱ Среднее время ответа: {stats['average_response_time']} секунд\n"
+            f"📈 Запросов в секунду: {stats['requests_per_second']}"
+        )
+        
+        await message.answer(text)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении статистики производительности: {e}")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик команды /covers
+@dp.message(Command("covers"))
+async def cmd_covers(message: Message):
+    """Показать меню управления обложками"""
+    try:
+        # Проверяем права администратора
+        if str(message.from_user.id) != os.getenv("ADMIN_USER_ID"):
+            await message.answer("У вас нет прав для использования этой команды.")
+            return
+        
+        # Получаем последние 10 одобренных submissions с медиа
+        submissions = await db.submissions.find({
+            "status": "approved",
+            "media_type": {"$in": ["photo", "video"]}
+        }).sort("submitted_at", -1).limit(10).to_list(length=None)
+        
+        if not submissions:
+            await message.answer("Нет доступных медиа для создания обложек.")
+            return
+        
+        # Создаем клавиатуру с выбором медиа
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+        for submission in submissions:
+            user = await db.users.find_one({"user_id": submission["user_id"]})
+            username = user.get("username", "Unknown") if user else "Unknown"
+            
+            keyboard.inline_keyboard.append([
+                InlineKeyboardButton(
+                    text=f"📸 {username} - {submission['media_type']}",
+                    callback_data=f"admin_cover_{submission['_id']}"
+                )
+            ])
+        
+        await message.answer(
+            "🎨 Генератор обложек\n\n"
+            "Выберите медиа для создания обложки:",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка в команде covers: {e}")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик выбора медиа для обложки
+@dp.callback_query(lambda c: c.data.startswith("admin_cover_"))
+async def handle_admin_cover_selection(callback: CallbackQuery, state: FSMContext):
+    """Обработчик выбора медиа для создания обложки"""
+    try:
+        submission_id = callback.data.split("_")[2]
+        
+        # Получаем информацию о submission
+        submission = await db.submissions.find_one({"_id": ObjectId(submission_id)})
+        if not submission:
+            await callback.answer("Медиа не найдено")
+            return
+        
+        # Сохраняем ID submission в состоянии
+        await state.update_data(selected_submission_id=submission_id)
+        
+        # Создаем клавиатуру с выбором формата
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="TikTok (9:16)", callback_data="admin_format_tiktok")],
+                [InlineKeyboardButton(text="Instagram Stories (9:16)", callback_data="admin_format_insta_story")],
+                [InlineKeyboardButton(text="Instagram Post (1:1)", callback_data="admin_format_insta_post")]
+            ]
+        )
+        
+        await callback.message.edit_text(
+            "Выберите формат обложки:",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при выборе медиа: {e}")
+        await callback.message.edit_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик выбора формата обложки
+@dp.callback_query(lambda c: c.data.startswith("admin_format_"))
+async def handle_admin_format_selection(callback: CallbackQuery, state: FSMContext):
+    """Обработчик выбора формата обложки"""
+    try:
+        format_type = callback.data.split("_")[2]
+        
+        # Сохраняем формат в состоянии
+        await state.update_data(selected_format=format_type)
+        
+        # Создаем клавиатуру с выбором стиля
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+        for style in cover_generator.get_available_styles():
+            keyboard.inline_keyboard.append([
+                InlineKeyboardButton(
+                    text=style.capitalize(),
+                    callback_data=f"admin_style_{style}"
+                )
+            ])
+        
+        await callback.message.edit_text(
+            "Выберите стиль обложки:",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при выборе формата: {e}")
+        await callback.message.edit_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик выбора стиля обложки
+@dp.callback_query(lambda c: c.data.startswith("admin_style_"))
+async def handle_admin_style_selection(callback: CallbackQuery, state: FSMContext):
+    """Обработчик выбора стиля обложки"""
+    try:
+        style = callback.data.split("_")[2]
+        
+        # Получаем данные из состояния
+        data = await state.get_data()
+        submission_id = data.get("selected_submission_id")
+        format_type = data.get("selected_format")
+        
+        if not submission_id or not format_type:
+            await callback.message.edit_text("Ошибка: данные не найдены. Попробуйте снова.")
+            return
+        
+        # Получаем информацию о submission
+        submission = await db.submissions.find_one({"_id": ObjectId(submission_id)})
+        if not submission:
+            await callback.message.edit_text("Медиа не найдено")
+            return
+        
+        # Генерируем превью обложки
+        preview = await cover_generator.generate_preview(
+            submission=submission,
+            format_type=format_type,
+            style=style
+        )
+        
+        if not preview:
+            await callback.message.edit_text(
+                "❌ Не удалось сгенерировать превью.\n"
+                "Пожалуйста, попробуйте другой стиль или формат."
+            )
+            return
+        
+        # Отправляем превью
+        await callback.message.answer_photo(
+            photo=preview,
+            caption="Превью обложки. Введите текст для обложки:"
+        )
+        
+        # Сохраняем стиль в состоянии
+        await state.update_data(selected_style=style)
+        await state.set_state(AdminStates.waiting_for_cover_text)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при выборе стиля: {e}")
+        await callback.message.edit_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработчик ввода текста для обложки
+@dp.message(AdminStates.waiting_for_cover_text)
+async def handle_cover_text(message: Message, state: FSMContext):
+    """Обработчик ввода текста для обложки"""
+    try:
+        text = message.text
+        
+        # Получаем данные из состояния
+        data = await state.get_data()
+        submission_id = data.get("selected_submission_id")
+        format_type = data.get("selected_format")
+        style = data.get("selected_style")
+        
+        if not all([submission_id, format_type, style]):
+            await message.answer("Ошибка: данные не найдены. Попробуйте снова.")
+            await state.clear()
+            return
+        
+        # Получаем информацию о submission
+        submission = await db.submissions.find_one({"_id": ObjectId(submission_id)})
+        if not submission:
+            await message.answer("Медиа не найдено")
+            await state.clear()
+            return
+        
+        # Генерируем обложку
+        cover = await cover_generator.generate_cover(
+            submission=submission,
+            format_type=format_type,
+            style=style,
+            text=text
+        )
+        
+        if not cover:
+            await message.answer(
+                "❌ Не удалось сгенерировать обложку.\n"
+                "Пожалуйста, попробуйте снова."
+            )
+            await state.clear()
+            return
+        
+        # Отправляем обложку
+        await message.answer_photo(
+            photo=cover,
+            caption=f"✅ Обложка готова!\n\n"
+                   f"Формат: {format_type}\n"
+                   f"Стиль: {style}\n"
+                   f"Текст: {text}"
+        )
+        
+        # Очищаем состояние
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Ошибка при генерации обложки: {e}")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+        await state.clear()
+
 # Основная функция
 async def main():
     try:
         # Инициализируем MongoDB
         await init_mongodb()
+        
+        # Инициализируем мониторинг
+        await init_monitoring(db)
         
         # Настраиваем параметры polling для избежания конфликтов
         dp.startup.register(on_startup)
@@ -1130,7 +1662,7 @@ async def main():
             bot,
             allowed_updates=["message", "callback_query"],
             polling_timeout=30,
-            reset_webhook=True  # Сбрасываем вебхук перед запуском
+            reset_webhook=True
         )
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {e}")
@@ -1155,19 +1687,296 @@ async def on_shutdown(dispatcher):
     except Exception as e:
         logger.error(f"Ошибка при остановке бота: {e}")
 
-if __name__ == "__main__":
-    import asyncio
-    import platform
+# Команды для управления достижениями
+@dp.message_handler(commands=['achievements'])
+async def show_achievements_menu(message: types.Message):
+    """Показать меню управления достижениями"""
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("➕ Создать достижение", callback_data="create_achievement"))
+    keyboard.add(InlineKeyboardButton("📋 Список достижений", callback_data="list_achievements"))
+    keyboard.add(InlineKeyboardButton("📊 Статистика", callback_data="achievement_stats"))
+    keyboard.add(InlineKeyboardButton("⚙️ Настройки", callback_data="achievement_settings"))
     
-    # Настройка для Windows
-    if platform.system() == 'Windows':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    await message.answer(
+        "🎯 Управление достижениями\n\n"
+        "Выберите действие:",
+        reply_markup=keyboard
+    )
+
+@dp.callback_query_handler(lambda c: c.data == "create_achievement")
+async def create_achievement_start(callback_query: types.CallbackQuery):
+    """Начать создание достижения"""
+    keyboard = InlineKeyboardMarkup()
+    for achievement_type in AchievementType:
+        keyboard.add(InlineKeyboardButton(
+            achievement_type.value,
+            callback_data=f"create_{achievement_type.value}"
+        ))
     
-    # Запускаем бота
+    await callback_query.message.edit_text(
+        "Выберите тип достижения:",
+        reply_markup=keyboard
+    )
+
+@dp.callback_query_handler(lambda c: c.data.startswith("create_"))
+async def create_achievement_type(callback_query: types.CallbackQuery, state: FSMContext):
+    """Обработка выбора типа достижения"""
+    achievement_type = callback_query.data.replace("create_", "")
+    await state.update_data(achievement_type=achievement_type)
+    
+    await AchievementStates.waiting_for_name.set()
+    await callback_query.message.edit_text(
+        "Введите название достижения:"
+    )
+
+@dp.message_handler(state=AchievementStates.waiting_for_name)
+async def process_achievement_name(message: types.Message, state: FSMContext):
+    """Обработка названия достижения"""
+    await state.update_data(name=message.text)
+    await AchievementStates.waiting_for_description.set()
+    await message.answer("Введите описание достижения:")
+
+@dp.message_handler(state=AchievementStates.waiting_for_description)
+async def process_achievement_description(message: types.Message, state: FSMContext):
+    """Обработка описания достижения"""
+    await state.update_data(description=message.text)
+    await AchievementStates.waiting_for_requirements.set()
+    await message.answer("Введите требования для достижения (в формате JSON):")
+
+@dp.message_handler(state=AchievementStates.waiting_for_requirements)
+async def process_achievement_requirements(message: types.Message, state: FSMContext):
+    """Обработка требований достижения"""
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем")
+        requirements = eval(message.text)
+        await state.update_data(requirements=requirements)
+        
+        data = await state.get_data()
+        achievement_type = data.get("achievement_type")
+        
+        if achievement_type == AchievementType.SEASONAL.value:
+            await AchievementStates.waiting_for_season.set()
+            await message.answer("Введите сезон достижения:")
+        elif achievement_type == AchievementType.COLLECTION.value:
+            await AchievementStates.waiting_for_collection.set()
+            await message.answer("Введите название коллекции:")
+        elif achievement_type == AchievementType.EVENT.value:
+            await AchievementStates.waiting_for_event.set()
+            await message.answer("Введите название события:")
+        elif achievement_type == AchievementType.SPECIAL.value:
+            await AchievementStates.waiting_for_special.set()
+            await message.answer("Введите специальные условия (в формате JSON):")
+        else:
+            await AchievementStates.waiting_for_rewards.set()
+            await message.answer("Введите награды за достижение (в формате JSON):")
+            
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-        raise 
+        await message.answer(f"Ошибка в формате JSON: {e}\nПопробуйте еще раз:")
+
+@dp.message_handler(state=AchievementStates.waiting_for_season)
+async def process_achievement_season(message: types.Message, state: FSMContext):
+    """Обработка сезона достижения"""
+    await state.update_data(season=message.text)
+    await AchievementStates.waiting_for_expires_at.set()
+    await message.answer("Введите дату окончания сезона (в формате YYYY-MM-DD):")
+
+@dp.message_handler(state=AchievementStates.waiting_for_collection)
+async def process_achievement_collection(message: types.Message, state: FSMContext):
+    """Обработка коллекции достижения"""
+    await state.update_data(collection=message.text)
+    await AchievementStates.waiting_for_rewards.set()
+    await message.answer("Введите награды за достижение (в формате JSON):")
+
+@dp.message_handler(state=AchievementStates.waiting_for_event)
+async def process_achievement_event(message: types.Message, state: FSMContext):
+    """Обработка события достижения"""
+    await state.update_data(event=message.text)
+    await AchievementStates.waiting_for_rewards.set()
+    await message.answer("Введите награды за достижение (в формате JSON):")
+
+@dp.message_handler(state=AchievementStates.waiting_for_special)
+async def process_achievement_special(message: Message, state: FSMContext):
+    """Обработка специальных условий достижения"""
+    try:
+        special = eval(message.text)
+        await state.update_data(special=special)
+        await AchievementStates.waiting_for_rewards.set()
+        await message.answer("Введите награды за достижение (в формате JSON):")
+    except Exception as e:
+        await message.answer(f"Ошибка в формате JSON: {e}\nПопробуйте еще раз:")
+
+@dp.message_handler(state=AchievementStates.waiting_for_rewards)
+async def process_achievement_rewards(message: types.Message, state: FSMContext):
+    """Обработка наград достижения"""
+    try:
+        rewards = eval(message.text)
+        await state.update_data(rewards=rewards)
+        
+        data = await state.get_data()
+        achievement_type = data.get("achievement_type")
+        
+        if achievement_type == AchievementType.SEASONAL.value:
+            await AchievementStates.waiting_for_expires_at.set()
+            await message.answer("Введите дату окончания сезона (в формате YYYY-MM-DD):")
+        else:
+            await AchievementStates.waiting_for_hidden.set()
+            await message.answer("Скрытое достижение? (да/нет):")
+            
+    except Exception as e:
+        await message.answer(f"Ошибка в формате JSON: {e}\nПопробуйте еще раз:")
+
+@dp.message_handler(state=AchievementStates.waiting_for_expires_at)
+async def process_achievement_expires_at(message: types.Message, state: FSMContext):
+    """Обработка даты окончания достижения"""
+    try:
+        expires_at = datetime.strptime(message.text, "%Y-%m-%d")
+        await state.update_data(expires_at=expires_at)
+        await AchievementStates.waiting_for_hidden.set()
+        await message.answer("Скрытое достижение? (да/нет):")
+    except Exception as e:
+        await message.answer(f"Ошибка в формате даты: {e}\nПопробуйте еще раз (YYYY-MM-DD):")
+
+@dp.message_handler(state=AchievementStates.waiting_for_hidden)
+async def process_achievement_hidden(message: types.Message, state: FSMContext):
+    """Обработка скрытости достижения"""
+    hidden = message.text.lower() == "да"
+    await state.update_data(hidden=hidden)
+    
+    # Создаем достижение
+    data = await state.get_data()
+    achievement = Achievement(
+        name=data["name"],
+        description=data["description"],
+        type=AchievementType(data["achievement_type"]),
+        requirements=data["requirements"],
+        rewards=data["rewards"],
+        hidden=hidden,
+        expires_at=data.get("expires_at"),
+        season=data.get("season"),
+        collection=data.get("collection"),
+        event=data.get("event"),
+        special=data.get("special")
+    )
+    
+    # Сохраняем достижение
+    success = await achievement_system.create_achievement(achievement)
+    
+    if success:
+        await message.answer(
+            f"✅ Достижение успешно создано!\n\n"
+            f"🎯 {achievement.name}\n"
+            f"📝 {achievement.description}\n"
+            f"⭐️ {achievement.points} очков"
+        )
+    else:
+        await message.answer("❌ Ошибка при создании достижения")
+    
+    await state.finish()
+
+@dp.callback_query_handler(lambda c: c.data == "list_achievements")
+async def list_achievements(callback_query: types.CallbackQuery):
+    """Показать список достижений"""
+    achievements = await achievement_system.get_all_achievements()
+    
+    if not achievements:
+        await callback_query.message.edit_text("Нет доступных достижений")
+        return
+    
+    text = "📋 Список достижений:\n\n"
+    for achievement in achievements:
+        text += f"🎯 {achievement.name}\n"
+        text += f"📝 {achievement.description}\n"
+        text += f"⭐️ {achievement.points} очков\n"
+        text += f"🔒 {'Скрытое' if achievement.hidden else 'Видимое'}\n"
+        if achievement.expires_at:
+            text += f"⏰ До: {achievement.expires_at.strftime('%Y-%m-%d')}\n"
+        text += "\n"
+    
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("◀️ Назад", callback_data="achievements"))
+    
+    await callback_query.message.edit_text(text, reply_markup=keyboard)
+
+@dp.callback_query_handler(lambda c: c.data == "achievement_stats")
+async def show_achievement_stats(callback_query: types.CallbackQuery):
+    """Показать статистику достижений"""
+    stats = await achievement_system.get_achievement_stats()
+    
+    text = "📊 Статистика достижений:\n\n"
+    text += f"Всего достижений: {stats['total']}\n"
+    text += f"Активных достижений: {stats['active']}\n"
+    text += f"Скрытых достижений: {stats['hidden']}\n"
+    text += f"Сезонных достижений: {stats['seasonal']}\n"
+    text += f"Коллекций: {stats['collections']}\n"
+    text += f"Событий: {stats['events']}\n"
+    text += f"Специальных достижений: {stats['special']}\n\n"
+    
+    text += "По типам:\n"
+    for type_name, count in stats["by_type"].items():
+        text += f"{type_name}: {count}\n"
+    
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("◀️ Назад", callback_data="achievements"))
+    
+    await callback_query.message.edit_text(text, reply_markup=keyboard)
+
+@dp.callback_query_handler(lambda c: c.data == "achievement_settings")
+async def show_achievement_settings(callback_query: types.CallbackQuery):
+    """Показать настройки достижений"""
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("📈 Настройки прогресса", callback_data="progress_settings"))
+    keyboard.add(InlineKeyboardButton("🎁 Настройки наград", callback_data="reward_settings"))
+    keyboard.add(InlineKeyboardButton("⚡️ Настройки бонусов", callback_data="bonus_settings"))
+    keyboard.add(InlineKeyboardButton("◀️ Назад", callback_data="achievements"))
+    
+    await callback_query.message.edit_text(
+        "⚙️ Настройки достижений\n\n"
+        "Выберите категорию настроек:",
+        reply_markup=keyboard
+    )
+
+@dp.callback_query_handler(lambda c: c.data == "progress_settings")
+async def show_progress_settings(callback_query: types.CallbackQuery):
+    """Показать настройки прогресса"""
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("📊 Настройки отображения", callback_data="progress_display"))
+    keyboard.add(InlineKeyboardButton("⏰ Настройки времени", callback_data="progress_time"))
+    keyboard.add(InlineKeyboardButton("◀️ Назад", callback_data="achievement_settings"))
+    
+    await callback_query.message.edit_text(
+        "📈 Настройки прогресса\n\n"
+        "Выберите настройку:",
+        reply_markup=keyboard
+    )
+
+@dp.callback_query_handler(lambda c: c.data == "reward_settings")
+async def show_reward_settings(callback_query: types.CallbackQuery):
+    """Показать настройки наград"""
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("⭐️ Настройки очков", callback_data="points_settings"))
+    keyboard.add(InlineKeyboardButton("🏅 Настройки бейджей", callback_data="badge_settings"))
+    keyboard.add(InlineKeyboardButton("👑 Настройки титулов", callback_data="title_settings"))
+    keyboard.add(InlineKeyboardButton("◀️ Назад", callback_data="achievement_settings"))
+    
+    await callback_query.message.edit_text(
+        "🎁 Настройки наград\n\n"
+        "Выберите настройку:",
+        reply_markup=keyboard
+    )
+
+@dp.callback_query_handler(lambda c: c.data == "bonus_settings")
+async def show_bonus_settings(callback_query: types.CallbackQuery):
+    """Показать настройки бонусов"""
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("⏱ Настройки длительности", callback_data="bonus_duration"))
+    keyboard.add(InlineKeyboardButton("📊 Настройки эффектов", callback_data="bonus_effects"))
+    keyboard.add(InlineKeyboardButton("◀️ Назад", callback_data="achievement_settings"))
+    
+    await callback_query.message.edit_text(
+        "⚡️ Настройки бонусов\n\n"
+        "Выберите настройку:",
+        reply_markup=keyboard
+    )
+
+# Запуск бота
+if __name__ == '__main__':
+    executor.start_polling(dp, skip_updates=True)

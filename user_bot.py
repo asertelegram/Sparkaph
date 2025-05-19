@@ -10,13 +10,35 @@ import ssl
 import certifi
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image
 import io
+from models import User
+from pymongo import MongoClient
+from achievements import achievement_system
+from social_media import social_media_manager
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from security import SecuritySystem
+from notifications import NotificationSystem
+from aiogram.types import ParseMode, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
+from aiogram import Bot, Dispatcher, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.types import ParseMode, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
+import logging
+import asyncio
+from datetime import datetime, UTC
+from motor.motor_asyncio import AsyncIOMotorClient
+from achievements import AchievementSystem, Achievement
 
 # Настройка логирования
 logging.basicConfig(
@@ -38,7 +60,8 @@ try:
         raise ValueError("USER_BOT_TOKEN отсутствует в .env файле")
     
     bot = Bot(token=USER_BOT_TOKEN)
-    dp = Dispatcher()
+    storage = MemoryStorage()
+    dp = Dispatcher(bot, storage=storage)
     logger.info("Бот инициализирован успешно")
 except Exception as e:
     logger.error(f"Ошибка инициализации бота: {e}")
@@ -68,9 +91,6 @@ class MockCollection:
     
     async def find_one(self, query=None, *args, **kwargs):
         logger.warning(f"Вызов find_one для {self.name} с заглушкой БД")
-        # Для тестирования пользователя
-        if self.name == "users" and query and query.get("user_id"):
-            return {"user_id": query["user_id"], "username": "user", "points": 0, "current_challenge": None}
         return None
     
     async def find(self, query=None, *args, **kwargs):
@@ -96,7 +116,7 @@ class MockCursor:
         self.data = data
     
     async def to_list(self, length=None):
-        return []
+        return self.data
 
 class MockResult:
     """Имитация результата операции MongoDB."""
@@ -193,6 +213,7 @@ class UserStates(StatesGroup):
     registering_gender = State() 
     registering_age = State()
     registering_location = State()
+    waiting_for_social_link = State()
 
 # Бейджи и их условия
 BADGES = {
@@ -448,11 +469,11 @@ async def cmd_start(message: Message, state: FSMContext):
             f"Приглашай друзей и получай +20 очков за каждого!"
         )
         
-        keyboard = types.ReplyKeyboardMarkup(
+        keyboard = ReplyKeyboardMarkup(
             keyboard=[
-                [types.KeyboardButton(text="🎯 Челленджи"), types.KeyboardButton(text="📊 Мой рейтинг")],
-                [types.KeyboardButton(text="✅ Мои достижения"), types.KeyboardButton(text="👥 Пригласить друга")],
-                [types.KeyboardButton(text="🔔 Уведомления"), types.KeyboardButton(text="📞 Поддержка")]
+                [KeyboardButton(text="🎯 Челленджи"), KeyboardButton(text="📊 Мой рейтинг")],
+                [KeyboardButton(text="✅ Мои достижения"), KeyboardButton(text="👥 Пригласить друга")],
+                [KeyboardButton(text="📞 Поддержка")]
             ],
             resize_keyboard=True
         )
@@ -463,7 +484,7 @@ async def cmd_start(message: Message, state: FSMContext):
         logger.error(f"Ошибка в команде start: {e}")
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
-@dp.callback_query(UserStates.registering_gender, F.data.startswith("gender_"))
+@dp.callback_query(lambda c: c.data.startswith("gender_"))
 async def process_gender(callback: CallbackQuery, state: FSMContext):
     gender = callback.data.split("_")[1]
     user_id = callback.from_user.id
@@ -493,7 +514,7 @@ async def process_gender(callback: CallbackQuery, state: FSMContext):
     await state.set_state(UserStates.registering_age)
     await callback.answer()
 
-@dp.callback_query(UserStates.registering_age, F.data.startswith("age_"))
+@dp.callback_query(lambda c: c.data.startswith("age_"))
 async def process_age(callback: CallbackQuery, state: FSMContext):
     age = callback.data.split("_")[1]
     user_id = callback.from_user.id
@@ -550,132 +571,41 @@ async def finalize_registration(message: Message, user_id: int):
 
 # Клавиатура главного меню
 def get_main_menu():
-    keyboard = types.ReplyKeyboardMarkup(
+    keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [types.KeyboardButton(text="🎯 Челленджи")],
-            [types.KeyboardButton(text="📊 Мой рейтинг"), types.KeyboardButton(text="✅ Мои достижения")],
-            [types.KeyboardButton(text="👥 Пригласить друга"), types.KeyboardButton(text="📞 Поддержка")],
-            [types.KeyboardButton(text="🎡 Колесо фортуны"), types.KeyboardButton(text="🎨 Генератор обложек")]
+            [KeyboardButton(text="🎯 Челленджи")],
+            [KeyboardButton(text="📊 Мой рейтинг"), KeyboardButton(text="✅ Мои достижения")],
+            [KeyboardButton(text="👥 Пригласить друга"), KeyboardButton(text="📞 Поддержка")],
+            [KeyboardButton(text="🎡 Колесо фортуны"), KeyboardButton(text="🎨 Генератор обложек")]
         ],
         resize_keyboard=True
     )
     return keyboard
 
 # Обработчик перехода в меню челленджей
-@dp.message(F.text == "🎯 Челленджи")
+@dp.message(lambda m: m.text == "🎯 Челленджи")
 async def show_challenge_categories(message: Message, state: FSMContext):
     try:
-        user_id = message.from_user.id
-        user = await db.users.find_one({"user_id": user_id})
-        
-        if not user:
-            await message.answer("Сначала зарегистрируйся через /start")
-            return
-        
-        # Автоматическая проверка подписки
-        is_subscribed = await check_subscription(user_id)
-        subscription_changed = False
-        
-        if is_subscribed and not user.get("subscription"):
-            # Обновляем статус подписки и начисляем очки
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"subscription": True}, "$inc": {"points": 10}}
-            )
-            await message.answer("Спасибо за подписку! Тебе начислено 10 очков.")
-            subscription_changed = True
-        elif not is_subscribed and user.get("subscription"):
-            # Если пользователь отписался
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"subscription": False}}
-            )
-            
-            # Создаем кнопку для перехода в канал
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_ID.replace('@', '')}")],
-                ]
-            )
-            
-            await message.answer(
-                "⚠️ Вы отписались от нашего канала!\n"
-                "Для доступа к челленджам необходимо подписаться на канал.",
-                reply_markup=keyboard
-            )
-            return
-        
-        if not is_subscribed:
-            # Создаем кнопку для перехода в канал
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_ID.replace('@', '')}")],
-                ]
-            )
-            
-            await message.answer(
-                "Для получения челленджей необходимо подписаться на канал.\n"
-                "После подписки ты получишь 10 очков!",
-                reply_markup=keyboard
-            )
-            return
-        
-        # Проверка текущего челленджа
-        if user.get("current_challenge"):
-            # Если у пользователя уже есть активный челлендж
-            challenge = await db.challenges.find_one({"_id": user["current_challenge"]})
-            if challenge:
-                category = await db.categories.find_one({"_id": challenge.get("category_id")})
-                category_name = category.get("name", "Неизвестная категория") if category else "Неизвестная категория"
-                
-                # Формируем описание челленджа
-                challenge_description = challenge.get("description", "")
-                
-                text = (
-                    f"🎯 У тебя уже есть активный челлендж!\n\n"
-                    f"Категория: {category_name}\n"
-                    f"Челлендж: {challenge['text']}\n"
-                )
-                
-                if challenge_description:
-                    text += f"\nОписание: {challenge_description}\n"
-                
-                text += "\nВыполни его или пропусти, чтобы получить новый."
-                
-                await message.answer(text, reply_markup=get_challenge_menu())
-                return
-        
-        # Получаем все категории челленджей
-        categories = await db.categories.find().to_list(length=None)
+        # Получаем все активные категории
+        categories = await db.categories.find({"status": "active"}).to_list(length=None)
         
         if not categories:
-            await message.answer("К сожалению, категории пока не созданы. Попробуй позже.")
+            await message.answer("К сожалению, сейчас нет доступных категорий. Попробуй позже.")
             return
         
-        # Создаем inline-клавиатуру с категориями
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-        
+        # Создаем клавиатуру с категориями
+        keyboard = InlineKeyboardMarkup(row_width=1)
         for category in categories:
-            # Получаем количество доступных челленджей в категории
-            available_challenges = await db.challenges.count_documents({
-                "category_id": category["_id"],
-                "status": "active",
-                "$expr": {"$lt": [{"$size": "$taken_by"}, 5]}
-            })
-            
-            if available_challenges > 0:
-                keyboard.inline_keyboard.append([
-                    InlineKeyboardButton(
-                        text=f"{category['name']} ({available_challenges})", 
+            keyboard.add(InlineKeyboardButton(
+                text=category["name"],
                         callback_data=f"category_{category['_id']}"
-                    )
-                ])
+            ))
         
-        if len(keyboard.inline_keyboard) > 0:
-            await message.answer("Выбери категорию челленджа:", reply_markup=keyboard)
+        await message.answer(
+            "Выбери категорию челленджа:",
+            reply_markup=keyboard
+        )
             await state.set_state(UserStates.selecting_category)
-        else:
-            await message.answer("К сожалению, сейчас нет доступных челленжей ни в одной категории. Попробуй позже.")
         
     except Exception as e:
         logger.error(f"Ошибка при показе категорий челленджей: {e}")
@@ -683,18 +613,18 @@ async def show_challenge_categories(message: Message, state: FSMContext):
         await state.clear()
 
 def get_challenge_menu():
-    keyboard = types.ReplyKeyboardMarkup(
+    keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [types.KeyboardButton(text="📸 Отправить фото или видео")],
-            [types.KeyboardButton(text="🚫 Пропустить челлендж")],
-            [types.KeyboardButton(text="🏠 Главное меню")]
+            [KeyboardButton(text="📸 Отправить фото или видео")],
+            [KeyboardButton(text="🚫 Пропустить челлендж")],
+            [KeyboardButton(text="🏠 Главное меню")]
         ],
         resize_keyboard=True
     )
     return keyboard
 
 # Обработчик выбора категории
-@dp.callback_query(UserStates.selecting_category, F.data.startswith("category_"))
+@dp.callback_query(lambda c: c.data.startswith("category_"))
 async def select_category(callback: CallbackQuery, state: FSMContext):
     try:
         user_id = callback.from_user.id
@@ -782,7 +712,7 @@ async def select_category(callback: CallbackQuery, state: FSMContext):
         await state.clear()
 
 # Обработчик запроса на отправку медиа
-@dp.message(F.text == "📸 Отправить фото или видео")
+@dp.message(lambda m: m.text == "📸 Отправить фото или видео")
 async def request_media(message: Message, state: FSMContext):
     user_id = message.from_user.id
     user = await db.users.find_one({"user_id": user_id})
@@ -799,7 +729,7 @@ async def request_media(message: Message, state: FSMContext):
     await state.set_state(UserStates.waiting_for_media)
 
 # Обработчик пропуска челленджа
-@dp.message(F.text == "🚫 Пропустить челлендж")
+@dp.message(lambda m: m.text == "🚫 Пропустить челлендж")
 async def skip_challenge(message: Message, state: FSMContext):
     user_id = message.from_user.id
     user = await db.users.find_one({"user_id": user_id})
@@ -822,7 +752,7 @@ async def skip_challenge(message: Message, state: FSMContext):
     await state.clear()
 
 # Обработчик возврата в главное меню
-@dp.message(F.text == "🏠 Главное меню")
+@dp.message(lambda m: m.text == "🏠 Главное меню")
 async def back_to_menu(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Главное меню:", reply_markup=get_main_menu())
@@ -931,7 +861,7 @@ async def handle_media_submission(message: Message, state: FSMContext):
         
         await message.answer(
             "✅ Твой результат отправлен на проверку!\n"
-            "После проверки ты получишь уведомление.",
+            "Ожидай уведомления. Ты можешь посмотреть свой прогресс в меню (📊 Мой рейтинг, ✅ Мои достижения).",
             reply_markup=get_main_menu()
         )
         await state.clear()
@@ -943,76 +873,73 @@ async def handle_media_submission(message: Message, state: FSMContext):
 # Обработчик отправки челленджа (текст)
 @dp.message(UserStates.waiting_for_challenge_submission)
 async def handle_challenge_submission(message: Message, state: FSMContext):
+    """Обработчик отправки выполнения челленджа"""
     try:
-        user_id = message.from_user.id
-        user = await db.users.find_one({"user_id": user_id})
-        
-        if not user or not user.get("current_challenge"):
-            await message.answer("У тебя нет активного челленджа.", reply_markup=get_main_menu())
-            await state.clear()
+        user = await db.users.find_one({"user_id": message.from_user.id})
+        if not user:
+            await message.answer("Вы еще не зарегистрированы. Используйте /start для регистрации.")
             return
         
-        challenge_id = user["current_challenge"]
+        # Получаем данные о текущем челлендже
+        challenge_id = user.get("current_challenge")
+        if not challenge_id:
+            await message.answer("У вас нет активного челленджа.")
+            return
         
-        # Проверяем, содержит ли сообщение медиа
-        media = None
-        media_type = "text"
-        file_content = None
+        challenge = await db.challenges.find_one({"_id": ObjectId(challenge_id)})
+        if not challenge:
+            await message.answer("Челлендж не найден.")
+            return
         
-        if message.photo:
-            media = message.photo[-1].file_id
-            media_type = "photo"
-        elif message.video:
-            media = message.video.file_id
-            media_type = "video"
-        elif message.document:
-            media = message.document.file_id
-            media_type = "document"
-        
+        # Сохраняем выполнение
         submission = {
-            "user_id": user_id,
+            "user_id": message.from_user.id,
             "challenge_id": challenge_id,
-            "text": message.caption if message.caption else (message.text if message.text else "Отправка медиа"),
-            "media": media,
-            "media_type": media_type,
-            "submitted_at": datetime.now(UTC),
-            "status": "pending",
-            "file_content": file_content
+            "submitted_at": datetime.utcnow(),
+            "status": "pending"
         }
         
+        # Если есть медиа, сохраняем его
+        if message.photo:
+            submission["media_type"] = "photo"
+            submission["media_id"] = message.photo[-1].file_id
+        elif message.video:
+            submission["media_type"] = "video"
+            submission["media_id"] = message.video.file_id
+        
+        # Сохраняем выполнение
         await db.submissions.insert_one(submission)
         
-        # Очистка текущего челленджа и удаление из списка взявших
+        # Обновляем данные пользователя
         await db.users.update_one(
-            {"user_id": user_id},
-            {"$set": {"current_challenge": None}}
+            {"user_id": message.from_user.id},
+            {
+                "$set": {"current_challenge": None},
+                "$push": {"completed_challenges": challenge_id}
+            }
         )
         
-        await db.challenges.update_one(
-            {"_id": challenge_id},
-            {"$pull": {"taken_by": user_id}}
-        )
+        # Проверяем и награждаем достижениями
+        await check_and_award_achievements(message.from_user.id)
         
-        # Обновляем streak и проверяем бейджи
-        await update_streak(user_id)
-        
-        # Проверяем бейдж за первый челлендж
-        if len(user.get("completed_challenges", [])) == 0:
-            await award_badge(user_id, "first_challenge")
+        # Обновляем серию дней
+        await update_streak(message.from_user.id)
         
         await message.answer(
-            "✅ Твой результат отправлен на проверку!\n"
-            "После проверки ты получишь уведомление.",
-            reply_markup=get_main_menu()
+            "✅ Ваше выполнение челленджа принято!\n"
+            "Оно будет проверено модераторами в ближайшее время."
         )
+        
+        # Возвращаем в главное меню
         await state.clear()
+        await message.answer("Выберите действие:", reply_markup=get_main_menu())
+        
     except Exception as e:
-        logger.error(f"Ошибка при отправке челленджа: {e}")
-        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.", reply_markup=get_main_menu())
-        await state.clear()
+        logger.error(f"Ошибка при обработке выполнения челленджа: {e}")
+        await message.answer("Произошла ошибка. Попробуйте позже.")
 
 # Обработчик рейтинга
-@dp.message(F.text == "📊 Мой рейтинг")
+@dp.message(lambda m: m.text == "📊 Мой рейтинг")
 async def show_rating(message: Message):
     try:
         user_id = message.from_user.id
@@ -1060,92 +987,74 @@ async def show_rating(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик достижений
-@dp.message(F.text == "✅ Мои достижения")
+@dp.message(lambda m: m.text == "✅ Мои достижения")
 async def show_achievements(message: Message):
+    """Показать достижения пользователя"""
     try:
-        user_id = message.from_user.id
+        user = await db.users.find_one({"user_id": message.from_user.id})
         
-        user = await db.users.find_one({"user_id": user_id})
         if not user:
-            await message.answer("Сначала зарегистрируйся через /start")
+            await message.answer("Вы еще не зарегистрированы. Используйте /start для регистрации.")
             return
         
-        completed = user.get("completed_challenges", [])
-        total_completed = len(completed)
+        # Получаем достижения пользователя
+        user_achievements = achievement_system.get_user_achievements(User(**user))
         
-        if not completed:
-            await message.answer(
-                "У тебя пока нет выполненных челленджей.\n"
-                "Выбери категорию и начни выполнять задания!"
-            )
-            return
+        # Форматируем список достижений
+        achievements_text = achievement_system.format_achievements_list(user_achievements)
         
-        # Получение последних 5 выполненных челленджей
-        recent_challenges = []
-        for challenge_id in completed[-5:]:
-            challenge = await db.challenges.find_one({"_id": challenge_id})
-            if challenge:
-                category = await db.categories.find_one({"_id": challenge.get("category_id")})
-                category_name = category.get("name", "Неизвестная категория") if category else "Неизвестная категория"
-                recent_challenges.append({
-                    "text": challenge["text"],
-                    "category": category_name
-                })
+        # Добавляем информацию о прогрессе
+        total_achievements = len(achievement_system.get_all_achievements())
+        earned_achievements = len(user_achievements)
+        progress = (earned_achievements / total_achievements) * 100
         
-        # Получение статистики по категориям
-        category_stats = {}
-        for challenge_id in completed:
-            challenge = await db.challenges.find_one({"_id": challenge_id})
-            if challenge and challenge.get("category_id"):
-                category = await db.categories.find_one({"_id": challenge["category_id"]})
-                if category:
-                    category_name = category["name"]
-                    if category_name in category_stats:
-                        category_stats[category_name] += 1
-                    else:
-                        category_stats[category_name] = 1
+        header = f"🏆 Ваши достижения ({earned_achievements}/{total_achievements})\n"
+        progress_bar = f"Прогресс: {'█' * int(progress/10)}{'░' * (10 - int(progress/10))} {progress:.1f}%\n\n"
         
-        # Формируем текст достижений
-        text = (
-            f"✅ Твои достижения:\n\n"
-            f"Выполнено челленджей: {total_completed}\n"
-            f"Текущая серия: {user.get('streak', 0)} дней 🔥\n\n"
-        )
+        await message.answer(header + progress_bar + achievements_text)
         
-        # Добавляем бейджи
-        badges = user.get("badges", [])
-        if badges:
-            text += "🏆 Твои бейджи:\n"
-            for badge_id in badges:
-                badge = BADGES[badge_id]
-                text += f"• {badge['name']} - {badge['description']}\n"
-            text += "\n"
-        
-        # Добавляем статистику по категориям
-        if category_stats:
-            text += "По категориям:\n"
-            for category_name, count in sorted(category_stats.items(), key=lambda x: x[1], reverse=True):
-                text += f"• {category_name}: {count}\n"
-            text += "\n"
-        
-        # Добавляем последние выполненные челленджи
-        if recent_challenges:
-            text += "Недавно выполненные:\n"
-            for i, challenge in enumerate(reversed(recent_challenges), 1):
-                text += f"{i}. {challenge['text']} ({challenge['category']})\n"
-        
-        # Определяем уровень пользователя
-        level = await get_user_level(user["points"])
-        
-        text += f"\nТвой текущий уровень: {level} ⭐"
-        
-        await message.answer(text)
     except Exception as e:
         logger.error(f"Ошибка при показе достижений: {e}")
-        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+        await message.answer("Произошла ошибка при загрузке достижений. Попробуйте позже.")
+
+async def check_and_award_achievements(user_id: int):
+    """Проверяет и награждает пользователя достижениями"""
+    try:
+        user_data = await db.users.find_one({"user_id": user_id})
+        if not user_data:
+            return
+        
+        user = User(**user_data)
+        new_achievements = await achievement_system.check_achievements(user)
+        
+        if new_achievements:
+            # Обновляем данные пользователя
+            await db.users.update_one(
+                {"user_id": user_id},
+                {
+                    "$set": {
+                        "achievements": user.achievements,
+                        "points": user.points
+                    }
+                }
+            )
+            
+            # Отправляем уведомление о новых достижениях
+            achievements_text = "\n\n".join(
+                f"🏆 {achievement.name}\n{achievement.description}\n+{achievement.points} очков"
+                for achievement in new_achievements
+            )
+            
+            await bot.send_message(
+                user_id,
+                f"🎉 Поздравляем! Вы получили новые достижения:\n\n{achievements_text}"
+            )
+    
+    except Exception as e:
+        logger.error(f"Ошибка при проверке достижений: {e}")
 
 # Обработчик для приглашения друга
-@dp.message(F.text == "👥 Пригласить друга")
+@dp.message(lambda m: m.text == "👥 Пригласить друга")
 async def invite_friend(message: Message):
     user_id = message.from_user.id
     
@@ -1159,7 +1068,7 @@ async def invite_friend(message: Message):
     )
 
 # Обработчик для поддержки
-@dp.message(F.text == "📞 Поддержка")
+@dp.message(lambda m: m.text == "📞 Поддержка")
 async def contact_support(message: Message):
     await message.answer(
         "📞 Поддержка\n\n"
@@ -1179,7 +1088,7 @@ FORTUNE_PRIZES = [
 ]
 
 # Обработчик колеса фортуны
-@dp.message(F.text == "🎡 Колесо фортуны")
+@dp.message(lambda m: m.text == "🎡 Колесо фортуны")
 async def fortune_wheel(message: Message):
     try:
         user_id = message.from_user.id
@@ -1224,7 +1133,7 @@ async def fortune_wheel(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик вращения колеса
-@dp.callback_query(F.data == "spin_wheel")
+@dp.callback_query(lambda c: c.data == "spin_wheel")
 async def spin_wheel(callback: CallbackQuery):
     try:
         user_id = callback.from_user.id
@@ -1287,7 +1196,7 @@ async def spin_wheel(callback: CallbackQuery):
         await callback.message.edit_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик генератора обложек
-@dp.message(F.text == "🎨 Генератор обложек")
+@dp.message(lambda m: m.text == "🎨 Генератор обложек")
 async def cover_generator(message: Message):
     try:
         user_id = message.from_user.id
@@ -1347,7 +1256,7 @@ async def cover_generator(message: Message):
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
 # Обработчик создания обложки
-@dp.callback_query(F.data.startswith("create_cover_"))
+@dp.callback_query(lambda c: c.data.startswith("create_cover_"))
 async def create_cover(callback: CallbackQuery):
     try:
         submission_id = callback.data.split("_")[2]
@@ -1420,7 +1329,7 @@ async def generate_cover(submission: Dict, format_type: str) -> Optional[bytes]:
         return None
 
 # Обработчик выбора формата обложки
-@dp.callback_query(F.data.startswith("cover_"))
+@dp.callback_query(lambda c: c.data.startswith("cover_"))
 async def process_cover_format(callback: CallbackQuery):
     try:
         parts = callback.data.split("_")
@@ -1646,7 +1555,7 @@ async def reminder_scheduler():
             await asyncio.sleep(60)
 
 # Добавляем обработчик для управления уведомлениями
-@dp.message(F.text == "🔔 Уведомления")
+@dp.message(lambda m: m.text == "🔔 Уведомления")
 async def manage_notifications(message: Message):
     try:
         user_id = message.from_user.id
@@ -1684,7 +1593,7 @@ async def manage_notifications(message: Message):
         logger.error(f"Ошибка при управлении уведомлениями: {e}")
 
 # Обработчик для переключения уведомлений
-@dp.callback_query(F.data == "toggle_notifications")
+@dp.callback_query(lambda c: c.data == "toggle_notifications")
 async def toggle_notifications(callback: CallbackQuery):
     try:
         user_id = callback.from_user.id
@@ -1717,10 +1626,469 @@ async def toggle_notifications(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка при переключении уведомлений: {e}")
 
-if __name__ == "__main__":
-    import asyncio
+@dp.message(Command("send_link"))
+async def send_social_link(message: types.Message):
+    user_id = message.from_user.id
+    user = await db.users.find_one({"user_id": user_id})
+    if not user:
+        await message.answer("Сначала зарегистрируйся через /start")
+        return
+    await message.answer(
+        "Если ты выложил видео/фото с челленджем в TikTok или Instagram, пришли сюда ссылку на свой пост!\n\n"
+        "Это поможет нам продвигать Sparkaph и даст тебе шанс попасть в топ!\n\n"
+        "Просто отправь ссылку одним сообщением."
+    )
+    await state.set_state("waiting_for_social_link")
+
+@dp.message(UserStates.waiting_for_social_link)
+async def save_social_link(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    link = message.text.strip()
+    # Простейшая валидация
+    if not (link.startswith("http://") or link.startswith("https://")):
+        await message.answer("Похоже, это не ссылка. Попробуй ещё раз!")
+        return
+    await db.users.update_one({"user_id": user_id}, {"$push": {"social_links": link}})
+    await message.answer("Спасибо! Ссылка сохранена. Ты молодец!")
+    await state.clear()
+
+@dp.message(lambda m: m.text == "📱 Поделиться в соцсетях")
+async def share_to_social_media(message: Message):
+    """Показать меню для публикации в социальных сетях"""
     try:
-        asyncio.run(main())
+        user_id = message.from_user.id
+        user = await db.users.find_one({"user_id": user_id})
+        
+        if not user:
+            await message.answer("Сначала зарегистрируйся через /start")
+            return
+        
+        # Получаем последние выполненные челленджи пользователя
+        completed_challenges = user.get("completed_challenges", [])
+        if not completed_challenges:
+            await message.answer(
+                "У вас пока нет выполненных челленджей.\n"
+                "Выполните хотя бы один челлендж, чтобы поделиться им!"
+            )
+            return
+        
+        # Получаем последние 5 выполненных челленджей
+        recent_submissions = await db.submissions.find({
+            "user_id": user_id,
+            "status": "approved",
+            "media_type": {"$in": ["photo", "video"]}
+        }).sort("submitted_at", -1).limit(5).to_list(length=None)
+        
+        if not recent_submissions:
+            await message.answer(
+                "У вас пока нет медиа-контента для публикации.\n"
+                "Выполните челлендж с фото или видео!"
+            )
+            return
+        
+        # Создаем клавиатуру с выбором медиа
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+        for submission in recent_submissions:
+            challenge = await db.challenges.find_one({"_id": submission["challenge_id"]})
+            if challenge:
+                keyboard.inline_keyboard.append([
+                    InlineKeyboardButton(
+                        text=f"📸 {challenge['text'][:30]}...",
+                        callback_data=f"share_media_{submission['_id']}"
+                    )
+                ])
+        
+        await message.answer(
+            "📱 Поделиться в соцсетях\n\n"
+            "Выберите медиа для публикации:\n"
+            "• TikTok\n"
+            "• Instagram Post\n"
+            "• Instagram Story\n\n"
+            "Выберите медиа из списка ниже:",
+            reply_markup=keyboard
+        )
+        
     except Exception as e:
-        logger.critical(f"Не удалось запустить бота: {e}")
-        print(f"КРИТИЧЕСКАЯ ОШИБКА: {e}") 
+        logger.error(f"Ошибка при показе меню соцсетей: {e}")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+@dp.callback_query(lambda c: c.data.startswith("share_media_"))
+async def handle_share_media(callback: CallbackQuery):
+    """Обработчик выбора медиа для публикации"""
+    try:
+        submission_id = callback.data.split("_")[2]
+        user_id = callback.from_user.id
+        
+        # Получаем информацию о submission
+        submission = await db.submissions.find_one({"_id": ObjectId(submission_id)})
+        if not submission:
+            await callback.answer("Медиа не найдено")
+            return
+        
+        # Создаем клавиатуру с выбором платформы
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="TikTok", callback_data=f"platform_tiktok_{submission_id}")],
+                [InlineKeyboardButton(text="Instagram Post", callback_data=f"platform_instagram_post_{submission_id}")],
+                [InlineKeyboardButton(text="Instagram Story", callback_data=f"platform_instagram_story_{submission_id}")]
+            ]
+        )
+        
+        await callback.message.edit_text(
+            "Выберите платформу для публикации:",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при выборе медиа: {e}")
+        await callback.message.edit_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+@dp.callback_query(lambda c: c.data.startswith("platform_"))
+async def handle_platform_selection(callback: CallbackQuery):
+    """Обработчик выбора платформы для публикации"""
+    try:
+        parts = callback.data.split("_")
+        platform = parts[1]
+        post_type = parts[2] if len(parts) > 2 else None
+        submission_id = parts[-1]
+        
+        # Получаем информацию о submission
+        submission = await db.submissions.find_one({"_id": ObjectId(submission_id)})
+        if not submission:
+            await callback.answer("Медиа не найдено")
+            return
+        
+        # Получаем информацию о челлендже
+        challenge = await db.challenges.find_one({"_id": submission["challenge_id"]})
+        if not challenge:
+            await callback.answer("Челлендж не найден")
+            return
+        
+        # Создаем временный файл с медиа
+        temp_dir = "temp_media"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        media_path = os.path.join(temp_dir, f"{submission_id}.{'mp4' if submission['media_type'] == 'video' else 'jpg'}")
+        
+        # Декодируем и сохраняем медиа
+        if submission.get("file_content"):
+            with open(media_path, "wb") as f:
+                f.write(base64.b64decode(submission["file_content"]))
+        
+        # Формируем подпись
+        caption = f"🎯 Челлендж: {challenge['text']}\n\n"
+        caption += f"💪 Выполнил челлендж в @Sparkaph\n"
+        caption += "#Sparkaph #Челленджи #ЛичностныйРост"
+        
+        # Публикуем в зависимости от платформы
+        if platform == "tiktok":
+            result = await social_media_manager.post_to_tiktok(
+                video_path=media_path,
+                caption=caption,
+                user_id=callback.from_user.id
+            )
+        elif platform == "instagram":
+            result = await social_media_manager.post_to_instagram(
+                media_path=media_path,
+                caption=caption,
+                user_id=callback.from_user.id,
+                is_story=(post_type == "story")
+            )
+        else:
+            await callback.answer("Неподдерживаемая платформа")
+            return
+        
+        # Удаляем временный файл
+        try:
+            os.remove(media_path)
+        except:
+            pass
+        
+        if result:
+            # Сохраняем информацию о публикации
+            await db.social_posts.insert_one({
+                "user_id": callback.from_user.id,
+                "submission_id": submission_id,
+                "platform": platform,
+                "post_type": post_type,
+                "post_id": result.get("id") or result.get("video_id"),
+                "published_at": datetime.now(UTC)
+            })
+            
+            # Начисляем бонусные очки
+            await db.users.update_one(
+                {"user_id": callback.from_user.id},
+                {"$inc": {"points": 50}}  # 50 очков за публикацию
+            )
+            
+            await callback.message.edit_text(
+                "✅ Публикация успешно размещена!\n\n"
+                "Вы получили 50 бонусных очков за публикацию.\n"
+                "Продолжайте делиться своими достижениями!"
+            )
+        else:
+            await callback.message.edit_text(
+                "❌ Не удалось опубликовать контент.\n"
+                "Пожалуйста, попробуйте позже или выберите другое медиа."
+            )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при публикации в соцсети: {e}")
+        await callback.message.edit_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Инициализация системы достижений
+achievement_system = AchievementSystem(db)
+
+# Добавляем новые состояния
+class AchievementStates(StatesGroup):
+    viewing_achievements = State()
+    viewing_progress = State()
+
+# Добавляем новые команды
+@dp.message_handler(commands=['achievements'])
+async def show_achievements(message: types.Message):
+    """Показать достижения пользователя"""
+    user = await get_user(message.from_user.id)
+    if not user:
+        await message.answer("Сначала зарегистрируйтесь с помощью команды /start")
+        return
+    
+    # Получаем достижения пользователя
+    user_achievements = await achievement_system.get_user_achievements(user)
+    
+    # Форматируем список достижений
+    text = "🏆 Ваши достижения:\n\n"
+    text += achievement_system.format_achievements_list(user_achievements)
+    
+    # Добавляем кнопки
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("📊 Прогресс", callback_data="achievement_progress"))
+    keyboard.add(InlineKeyboardButton("🎯 Доступные", callback_data="available_achievements"))
+    
+    await message.answer(text, reply_markup=keyboard)
+
+@dp.callback_query_handler(lambda c: c.data == "achievement_progress")
+async def show_progress(callback_query: types.CallbackQuery):
+    """Показать прогресс достижений"""
+    user = await get_user(callback_query.from_user.id)
+    if not user:
+        await callback_query.answer("Сначала зарегистрируйтесь")
+        return
+    
+    # Получаем доступные достижения
+    available_achievements = await achievement_system.get_available_achievements(user)
+    
+    if not available_achievements:
+        await callback_query.answer("У вас нет доступных достижений")
+        return
+    
+    # Форматируем прогресс
+    text = "📊 Прогресс достижений:\n\n"
+    for achievement in available_achievements:
+        progress = await achievement_system.get_achievement_progress(user, achievement)
+        text += f"{achievement.icon} {achievement.name}\n"
+        for key, value in progress.items():
+            text += f"Прогресс: {value['current']}/{value['required']} ({value['percentage']:.0f}%)\n"
+        text += "\n"
+    
+    await callback_query.message.edit_text(text, reply_markup=callback_query.message.reply_markup)
+
+@dp.callback_query_handler(lambda c: c.data == "available_achievements")
+async def show_available(callback_query: types.CallbackQuery):
+    """Показать доступные достижения"""
+    user = await get_user(callback_query.from_user.id)
+    if not user:
+        await callback_query.answer("Сначала зарегистрируйтесь")
+        return
+    
+    # Получаем доступные достижения
+    available_achievements = await achievement_system.get_available_achievements(user)
+    
+    if not available_achievements:
+        await callback_query.answer("У вас нет доступных достижений")
+        return
+    
+    # Форматируем список
+    text = "🎯 Доступные достижения:\n\n"
+    text += achievement_system.format_achievements_list(available_achievements)
+    
+    await callback_query.message.edit_text(text, reply_markup=callback_query.message.reply_markup)
+
+# Обновляем существующие функции для интеграции с системой достижений
+
+async def complete_challenge(user_id: int, challenge_id: str):
+    """Обновляем функцию завершения челленджа"""
+    user = await get_user(user_id)
+    if not user:
+        return False
+    
+    # Добавляем челлендж в список выполненных
+    await db.users.update_one(
+        {"user_id": user_id},
+        {
+            "$push": {
+                "completed_challenges": {
+                    "challenge_id": challenge_id,
+                    "completed_at": datetime.now(UTC)
+                }
+            }
+        }
+    )
+    
+    # Проверяем достижения
+    new_achievements = await achievement_system.check_achievements(user)
+    
+    # Выдаем новые достижения
+    for achievement in new_achievements:
+        await achievement_system.award_achievement(user_id, achievement)
+        
+        # Отправляем уведомление о новом достижении
+        bot = Bot.get_current()
+        await bot.send_message(
+            user_id,
+            f"🎉 Поздравляем! Вы получили новое достижение:\n\n"
+            f"{achievement.icon} {achievement.name}\n"
+            f"📝 {achievement.description}\n"
+            f"⭐️ +{achievement.points} очков"
+        )
+    
+    return True
+
+async def update_streak(user_id: int):
+    """Обновляем функцию обновления серии"""
+    user = await get_user(user_id)
+    if not user:
+        return False
+    
+    # Обновляем серию
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$inc": {"streak": 1}}
+    )
+    
+    # Проверяем достижения
+    new_achievements = await achievement_system.check_achievements(user)
+    
+    # Выдаем новые достижения
+    for achievement in new_achievements:
+        await achievement_system.award_achievement(user_id, achievement)
+        
+        # Отправляем уведомление о новом достижении
+        bot = Bot.get_current()
+        await bot.send_message(
+            user_id,
+            f"🎉 Поздравляем! Вы получили новое достижение:\n\n"
+            f"{achievement.icon} {achievement.name}\n"
+            f"📝 {achievement.description}\n"
+            f"⭐️ +{achievement.points} очков"
+        )
+    
+    return True
+
+async def add_referral(user_id: int, referral_id: int):
+    """Обновляем функцию добавления реферала"""
+    user = await get_user(user_id)
+    if not user:
+        return False
+    
+    # Добавляем реферала
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$push": {"referrals": referral_id}}
+    )
+    
+    # Проверяем достижения
+    new_achievements = await achievement_system.check_achievements(user)
+    
+    # Выдаем новые достижения
+    for achievement in new_achievements:
+        await achievement_system.award_achievement(user_id, achievement)
+        
+        # Отправляем уведомление о новом достижении
+        bot = Bot.get_current()
+        await bot.send_message(
+            user_id,
+            f"🎉 Поздравляем! Вы получили новое достижение:\n\n"
+            f"{achievement.icon} {achievement.name}\n"
+            f"📝 {achievement.description}\n"
+            f"⭐️ +{achievement.points} очков"
+        )
+    
+    return True
+
+async def add_social_share(user_id: int, challenge_id: str):
+    """Обновляем функцию добавления шера в соцсети"""
+    user = await get_user(user_id)
+    if not user:
+        return False
+    
+    # Добавляем шеер
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$push": {"social_shares": challenge_id}}
+    )
+    
+    # Проверяем достижения
+    new_achievements = await achievement_system.check_achievements(user)
+    
+    # Выдаем новые достижения
+    for achievement in new_achievements:
+        await achievement_system.award_achievement(user_id, achievement)
+        
+        # Отправляем уведомление о новом достижении
+        bot = Bot.get_current()
+        await bot.send_message(
+            user_id,
+            f"🎉 Поздравляем! Вы получили новое достижение:\n\n"
+            f"{achievement.icon} {achievement.name}\n"
+            f"📝 {achievement.description}\n"
+            f"⭐️ +{achievement.points} очков"
+        )
+    
+    return True
+
+async def update_level(user_id: int, new_level: int):
+    """Обновляем функцию обновления уровня"""
+    user = await get_user(user_id)
+    if not user:
+        return False
+    
+    # Обновляем уровень
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {"level": new_level}}
+    )
+    
+    # Проверяем достижения
+    new_achievements = await achievement_system.check_achievements(user)
+    
+    # Выдаем новые достижения
+    for achievement in new_achievements:
+        await achievement_system.award_achievement(user_id, achievement)
+        
+        # Отправляем уведомление о новом достижении
+        bot = Bot.get_current()
+        await bot.send_message(
+            user_id,
+            f"🎉 Поздравляем! Вы получили новое достижение:\n\n"
+            f"{achievement.icon} {achievement.name}\n"
+            f"📝 {achievement.description}\n"
+            f"⭐️ +{achievement.points} очков"
+        )
+    
+    return True
+
+# Добавляем периодическую очистку истекших достижений
+async def cleanup_achievements():
+    """Периодическая очистка истекших достижений"""
+    while True:
+        await achievement_system.cleanup_expired_achievements()
+        await asyncio.sleep(3600)  # Проверяем каждый час
+
+# Добавляем запуск очистки при старте бота
+if __name__ == '__main__':
+    # Запускаем очистку достижений
+    asyncio.create_task(cleanup_achievements())
+    
+    # Запускаем бота
+    executor.start_polling(dp, skip_updates=True) 

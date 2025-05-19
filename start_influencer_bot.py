@@ -1,6 +1,10 @@
 import asyncio
 import logging
+import os
 from influencer_bot import main
+
+# Установка порта для healthcheck
+os.environ["PORT"] = "8083"  # Уникальный порт для influencer bot
 
 # Настройка логирования
 logging.basicConfig(

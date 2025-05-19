@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import sys
+import socket
 from dotenv import load_dotenv
 from healthcheck import run_healthcheck_server
 import threading
@@ -11,6 +12,7 @@ load_dotenv()
 
 # Установка переменной окружения для запуска только админского бота
 os.environ["BOT_TYPE"] = "admin"
+os.environ["PORT"] = "8082"  # Уникальный порт для admin bot
 
 # Настройка логирования
 logging.basicConfig(
@@ -22,12 +24,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def is_port_in_use(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('localhost', port)) == 0
+
 # Запуск healthcheck сервера в отдельном потоке
 def start_healthcheck():
+    port = int(os.environ.get('PORT', 8082))
+    if not is_port_in_use(port):
     t = threading.Thread(target=run_healthcheck_server)
     t.daemon = True
     t.start()
-    logger.info("Healthcheck сервер запущен в отдельном потоке")
+        logger.info(f"Healthcheck сервер запущен на порту {port}")
+    else:
+        logger.warning(f"Порт {port} занят, healthcheck сервер не запущен")
 
 # Функция запуска бота
 async def main():

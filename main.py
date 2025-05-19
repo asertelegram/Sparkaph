@@ -1,80 +1,81 @@
+import os
 import asyncio
 import logging
-import sys
-import os
 from dotenv import load_dotenv
-from healthcheck import run_healthcheck_server
-import threading
-
-# Загрузка переменных окружения
-load_dotenv()
+from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
 
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.FileHandler('sparkaph.log'),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-# Запуск healthcheck сервера в отдельном потоке
-def start_healthcheck():
-    t = threading.Thread(target=run_healthcheck_server)
-    t.daemon = True
-    t.start()
-    logger.info("Healthcheck сервер запущен в отдельном потоке")
+# Загрузка переменных окружения
+load_dotenv()
 
-# Проверяем какой бот нужно запустить
-BOT_TYPE = os.getenv("BOT_TYPE", "all").lower()
+# Получение токенов
+USER_BOT_TOKEN = os.getenv('USER_BOT_TOKEN')
+ADMIN_BOT_TOKEN = os.getenv('ADMIN_BOT_TOKEN')
+INFLUENCER_BOT_TOKEN = os.getenv('INFLUENCER_BOT_TOKEN')
 
-# Функция запуска ботов
-async def main():
+# Получение типа бота
+BOT_TYPE = os.getenv('BOT_TYPE', 'all')
+
+async def start_bots():
     try:
-        # Запускаем healthcheck
-        start_healthcheck()
+        # Инициализация ботов
+        bots = {}
+        if BOT_TYPE in ['user', 'all']:
+            bots['user'] = Bot(token=USER_BOT_TOKEN, parse_mode=ParseMode.HTML)
+        if BOT_TYPE in ['admin', 'all']:
+            bots['admin'] = Bot(token=ADMIN_BOT_TOKEN, parse_mode=ParseMode.HTML)
+        if BOT_TYPE in ['influencer', 'all']:
+            bots['influencer'] = Bot(token=INFLUENCER_BOT_TOKEN, parse_mode=ParseMode.HTML)
         
-        # Импортируем ботов только когда они нужны, чтобы избежать конфликтов
-        if BOT_TYPE == "user" or BOT_TYPE == "all":
-            from user_bot import dp as user_dp, bot as user_bot
-            user_task = asyncio.create_task(user_dp.start_polling(user_bot))
-            logger.info("Пользовательский бот запущен!")
+        # Инициализация диспетчеров
+        dispatchers = {}
+        for bot_type, bot in bots.items():
+            dispatchers[bot_type] = Dispatcher()
         
-        if BOT_TYPE == "admin" or BOT_TYPE == "all":
-            from admin_bot import dp as admin_dp, bot as admin_bot
-            admin_task = asyncio.create_task(admin_dp.start_polling(admin_bot))
-            logger.info("Админ бот запущен!")
-            
-        if BOT_TYPE == "influencer" or BOT_TYPE == "all":
-            from influencer_bot import dp as influencer_dp, bot as influencer_bot
-            influencer_task = asyncio.create_task(influencer_dp.start_polling(influencer_bot))
-            logger.info("Инфлюенсер бот запущен!")
+        # Импорт хендлеров
+        if 'user' in bots:
+            from user_bot import register_handlers as register_user_handlers
+            register_user_handlers(dispatchers['user'])
         
-        # Если запущены все боты
-        if BOT_TYPE == "all":
-            await asyncio.gather(user_task, admin_task, influencer_task)
-        # Если запущен только пользовательский бот
-        elif BOT_TYPE == "user":
-            await user_task
-        # Если запущен только админский бот
-        elif BOT_TYPE == "admin":
-            await admin_task
-        # Если запущен только инфлюенсер бот
-        elif BOT_TYPE == "influencer":
-            await influencer_task
-        else:
-            logger.error(f"Неизвестный тип бота: {BOT_TYPE}. Используйте 'user', 'admin', 'influencer' или 'all'")
+        if 'admin' in bots:
+            from admin_bot import register_handlers as register_admin_handlers
+            register_admin_handlers(dispatchers['admin'])
+        
+        if 'influencer' in bots:
+            from influencer_bot import register_handlers as register_influencer_handlers
+            register_influencer_handlers(dispatchers['influencer'])
+        
+        # Запуск ботов
+        tasks = []
+        for bot_type, (bot, dp) in bots.items():
+            tasks.append(dp.start_polling(bot))
+        
+        logger.info(f"Запущены боты: {', '.join(bots.keys())}")
+        await asyncio.gather(*tasks)
+        
     except Exception as e:
         logger.error(f"Ошибка при запуске ботов: {e}")
         raise
+    finally:
+        # Закрытие ботов
+        for bot in bots.values():
+            await bot.session.close()
 
 if __name__ == "__main__":
-    # Запуск через asyncio
     try:
-        asyncio.run(main())
+        asyncio.run(start_bots())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Боты остановлены")
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-        sys.exit(1) 
+        logger.error(f"Критическая ошибка: {e}") 

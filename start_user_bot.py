@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import sys
+import socket
 from dotenv import load_dotenv
 from healthcheck import run_healthcheck_server
 import threading
@@ -11,6 +12,7 @@ load_dotenv()
 
 # Установка переменной окружения для запуска только пользовательского бота
 os.environ["BOT_TYPE"] = "user"
+os.environ["PORT"] = "8081"  # Уникальный порт для user bot
 
 # Настройка логирования
 logging.basicConfig(
@@ -22,18 +24,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def is_port_in_use(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('localhost', port)) == 0
+
 # Запуск healthcheck сервера в отдельном потоке
-def start_healthcheck():
-    t = threading.Thread(target=run_healthcheck_server)
-    t.daemon = True
-    t.start()
-    logger.info("Healthcheck сервер запущен в отдельном потоке")
+async def start_healthcheck():
+    port = int(os.environ.get('PORT', 8081))
+    if not is_port_in_use(port):
+        await run_healthcheck_server()
+        logger.info(f"Healthcheck сервер запущен на порту {port}")
+    else:
+        logger.warning(f"Порт {port} занят, healthcheck сервер не запущен")
 
 # Функция запуска бота
 async def main():
     try:
         # Запускаем healthcheck
-        start_healthcheck()
+        await start_healthcheck()
         
         # Импортируем только пользовательского бота
         from user_bot import dp as user_dp, bot as user_bot
