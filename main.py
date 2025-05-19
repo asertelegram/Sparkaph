@@ -1,10 +1,10 @@
 import os
 import asyncio
 import logging
-import multiprocessing
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 
 # Настройка логирования
 logging.basicConfig(
@@ -27,7 +27,7 @@ INFLUENCER_BOT_TOKEN = os.getenv('INFLUENCER_BOT_TOKEN')
 # Получение типа бота
 BOT_TYPE = os.getenv('BOT_TYPE', 'all')
 
-async def run_bot(bot_type: str, token: str):
+async def run_bot(bot_type: str, token: str, offset: int):
     try:
         bot = Bot(token=token, parse_mode=ParseMode.HTML)
         dp = Dispatcher()
@@ -43,7 +43,15 @@ async def run_bot(bot_type: str, token: str):
         register_handlers(dp)
         
         logger.info(f"Запуск бота {bot_type}...")
-        await dp.start_polling(bot)
+        
+        # Настройка параметров polling
+        await dp.start_polling(
+            bot,
+            allowed_updates=dp.resolve_used_update_types(),
+            polling_timeout=30,
+            polling_interval=3.0,
+            offset=offset
+        )
         
     except Exception as e:
         logger.error(f"Ошибка при запуске бота {bot_type}: {e}")
@@ -51,47 +59,33 @@ async def run_bot(bot_type: str, token: str):
     finally:
         await bot.session.close()
 
-def start_bot_process(bot_type: str, token: str):
-    asyncio.run(run_bot(bot_type, token))
+async def start_bots():
+    try:
+        tasks = []
+        
+        if BOT_TYPE in ['user', 'all']:
+            tasks.append(run_bot('user', USER_BOT_TOKEN, 0))
+            await asyncio.sleep(5)  # Задержка между запуском ботов
+            
+        if BOT_TYPE in ['admin', 'all']:
+            tasks.append(run_bot('admin', ADMIN_BOT_TOKEN, 1000))
+            await asyncio.sleep(5)
+            
+        if BOT_TYPE in ['influencer', 'all']:
+            tasks.append(run_bot('influencer', INFLUENCER_BOT_TOKEN, 2000))
+            await asyncio.sleep(5)
+        
+        # Запускаем все боты
+        await asyncio.gather(*tasks)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при запуске ботов: {e}")
+        raise
 
 if __name__ == "__main__":
     try:
-        processes = []
-        
-        if BOT_TYPE in ['user', 'all']:
-            p = multiprocessing.Process(
-                target=start_bot_process,
-                args=('user', USER_BOT_TOKEN)
-            )
-            processes.append(p)
-            p.start()
-            
-        if BOT_TYPE in ['admin', 'all']:
-            p = multiprocessing.Process(
-                target=start_bot_process,
-                args=('admin', ADMIN_BOT_TOKEN)
-            )
-            processes.append(p)
-            p.start()
-            
-        if BOT_TYPE in ['influencer', 'all']:
-            p = multiprocessing.Process(
-                target=start_bot_process,
-                args=('influencer', INFLUENCER_BOT_TOKEN)
-            )
-            processes.append(p)
-            p.start()
-            
-        # Ждем завершения всех процессов
-        for p in processes:
-            p.join()
-            
+        asyncio.run(start_bots())
     except KeyboardInterrupt:
         logger.info("Получен сигнал завершения")
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-    finally:
-        # Завершаем все процессы
-        for p in processes:
-            if p.is_alive():
-                p.terminate() 
+        logger.error(f"Критическая ошибка: {e}") 
