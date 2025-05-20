@@ -17,6 +17,7 @@ from utils.keyboards import (
 )
 from utils.states import AdminStates
 from utils.helpers import format_challenge_info, format_challenge_stats
+import asyncio
 
 # Настройка логирования
 logging.basicConfig(
@@ -225,7 +226,7 @@ async def handle_challenge_creation(update: Update, context):
                 reply_markup=get_admin_menu_keyboard()
             )
 
-def main():
+async def main():
     """Запуск бота."""
     application = Application.builder().token(ADMIN_BOT_TOKEN).build()
     
@@ -252,7 +253,9 @@ def main():
     application.add_handler(conv_handler)
     
     # Запускаем бота
-    application.run_polling()
+    await application.initialize()
+    await application.start()
+    await application.run_polling()
 
 if __name__ == '__main__':
-    main() 
+    asyncio.run(main()) 

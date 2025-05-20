@@ -26,6 +26,7 @@ from utils.helpers import (
     get_random_challenge,
     validate_video_duration
 )
+import asyncio
 
 # Настройка логирования
 logging.basicConfig(
@@ -265,7 +266,7 @@ async def handle_video_submission(update: Update, context):
     )
     return UserStates.MAIN_MENU
 
-def main():
+async def main():
     """Запуск бота."""
     application = Application.builder().token(USER_BOT_TOKEN).build()
     
@@ -295,7 +296,9 @@ def main():
     application.add_handler(conv_handler)
     
     # Запускаем бота
-    application.run_polling()
+    await application.initialize()
+    await application.start()
+    await application.run_polling()
 
 if __name__ == '__main__':
-    main() 
+    asyncio.run(main()) 
