@@ -38,6 +38,14 @@ logger = logging.getLogger(__name__)
 # Инициализация базы данных
 db = Database()
 
+async def error_handler(update: Update, context):
+    """Обработчик ошибок."""
+    logger.error(f"Update {update} caused error {context.error}")
+    if update and update.effective_message:
+        await update.effective_message.reply_text(
+            "Произошла ошибка. Пожалуйста, попробуйте позже или обратитесь в поддержку."
+        )
+
 async def start(update: Update, context):
     """Обработчик команды /start."""
     user = update.effective_user
@@ -268,37 +276,46 @@ async def handle_video_submission(update: Update, context):
 
 async def main():
     """Запуск бота."""
-    application = Application.builder().token(USER_BOT_TOKEN).build()
-    
-    # Создаем обработчик разговора
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            UserStates.ONBOARDING: [
-                CallbackQueryHandler(handle_onboarding)
-            ],
-            UserStates.LANGUAGE_SELECTION: [
-                CallbackQueryHandler(handle_language_selection)
-            ],
-            UserStates.MAIN_MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
-            ],
-            UserStates.VIEWING_CHALLENGES: [
-                CallbackQueryHandler(handle_challenge_selection)
-            ],
-            UserStates.SENDING_VIDEO: [
-                MessageHandler(filters.VIDEO, handle_video_submission)
-            ]
-        },
-        fallbacks=[CommandHandler('start', start)]
-    )
-    
-    application.add_handler(conv_handler)
-    
-    # Запускаем бота
-    await application.initialize()
-    await application.start()
-    await application.run_polling()
+    try:
+        application = Application.builder().token(USER_BOT_TOKEN).build()
+        
+        # Добавляем обработчик ошибок
+        application.add_error_handler(error_handler)
+        
+        # Создаем обработчик разговора
+        conv_handler = ConversationHandler(
+            entry_points=[CommandHandler('start', start)],
+            states={
+                UserStates.ONBOARDING: [
+                    CallbackQueryHandler(handle_onboarding)
+                ],
+                UserStates.LANGUAGE_SELECTION: [
+                    CallbackQueryHandler(handle_language_selection)
+                ],
+                UserStates.MAIN_MENU: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
+                ],
+                UserStates.VIEWING_CHALLENGES: [
+                    CallbackQueryHandler(handle_challenge_selection)
+                ],
+                UserStates.SENDING_VIDEO: [
+                    MessageHandler(filters.VIDEO, handle_video_submission)
+                ]
+            },
+            fallbacks=[CommandHandler('start', start)]
+        )
+        
+        application.add_handler(conv_handler)
+        
+        # Запускаем бота
+        logger.info("Starting User Bot...")
+        await application.initialize()
+        await application.start()
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+    except Exception as e:
+        logger.error(f"Error in User Bot: {e}")
+        raise
 
 if __name__ == '__main__':
     asyncio.run(main()) 

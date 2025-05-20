@@ -25,26 +25,31 @@ async def start_web_server():
     await site.start()
     logger.info("Web server started on port 8080")
 
+async def run_bot(bot_main, bot_name):
+    """Запускает одного бота с обработкой ошибок."""
+    try:
+        logger.info(f"Starting {bot_name}...")
+        await bot_main()
+    except Exception as e:
+        logger.error(f"Error in {bot_name}: {e}")
+        raise
+
 async def run_all_bots():
     """Запускает все боты асинхронно."""
     try:
         # Запускаем веб-сервер
         await start_web_server()
         
-        # Запускаем боты с задержкой между ними
-        logger.info("Starting bots...")
+        # Создаем задачи для каждого бота
+        tasks = [
+            run_bot(user_bot_main, "User Bot"),
+            run_bot(admin_bot_main, "Admin Bot"),
+            run_bot(influencer_bot_main, "Influencer Bot")
+        ]
         
-        # Запускаем боты последовательно с небольшой задержкой
-        await user_bot_main()
-        await asyncio.sleep(2)  # Ждем 2 секунды
-        await admin_bot_main()
-        await asyncio.sleep(2)  # Ждем 2 секунды
-        await influencer_bot_main()
+        # Запускаем все боты параллельно
+        await asyncio.gather(*tasks)
         
-        # Держим ботов запущенными
-        while True:
-            await asyncio.sleep(3600)  # Проверяем каждый час
-            
     except Exception as e:
         logger.error(f"Error running bots: {e}")
         raise
