@@ -1,6 +1,7 @@
 import asyncio
 import os
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 from aiohttp import web
 from dotenv import load_dotenv
 import logging
@@ -21,6 +22,33 @@ influencer_bot = Bot(token=os.getenv("INFLUENCER_BOT_TOKEN"))
 user_dp = Dispatcher()
 admin_dp = Dispatcher()
 influencer_dp = Dispatcher()
+
+# Обработчики для user_bot
+@user_dp.message(Command("start"))
+async def user_start(message: types.Message):
+    await message.answer("👋 Привет! Я бот для пользователей Sparkaph.")
+
+@user_dp.message()
+async def user_echo(message: types.Message):
+    await message.answer(f"Вы написали: {message.text}")
+
+# Обработчики для admin_bot
+@admin_dp.message(Command("start"))
+async def admin_start(message: types.Message):
+    await message.answer("👋 Привет! Я админ-бот Sparkaph.")
+
+@admin_dp.message()
+async def admin_echo(message: types.Message):
+    await message.answer(f"Админ, вы написали: {message.text}")
+
+# Обработчики для influencer_bot
+@influencer_dp.message(Command("start"))
+async def influencer_start(message: types.Message):
+    await message.answer("👋 Привет! Я бот для инфлюенсеров Sparkaph.")
+
+@influencer_dp.message()
+async def influencer_echo(message: types.Message):
+    await message.answer(f"Инфлюенсер, вы написали: {message.text}")
 
 # Healthcheck endpoint
 async def healthcheck(request):
