@@ -1,4 +1,4 @@
-web: python main.py
+web: python user_bot.py
 worker: python run.py
 user: BOT_TYPE=user python main.py
 admin: BOT_TYPE=admin python main.py
