@@ -1,214 +1,81 @@
-# Sparkaph - Платформа для челленджей
+# Sparkaph - Бот для челленджей
 
-Sparkaph - это платформа для создания и участия в челленджах с интеграцией социальных сетей и системой достижений.
+Telegram-бот для создания и участия в челленджах с системой модерации и геймификации.
 
-## Возможности
+## Описание
 
-- Создание и управление челленджами
-- Интеграция с TikTok и Instagram
-- Система достижений и рейтинга
-- Автоматическая генерация обложек
-- Мониторинг и оптимизация
-- Админ-панель для управления
-
-## Требования
-
-- Python 3.8+
-- MongoDB 4.4+
-- Redis (опционально, для кэширования)
-- Доступ к API TikTok и Instagram
-
-## Установка
-
-1. Клонируйте репозиторий:
-```bash
-git clone https://github.com/your-username/sparkaph.git
-cd sparkaph
-```
-
-2. Создайте виртуальное окружение:
-```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
-```
-
-3. Установите зависимости:
-```bash
-pip install -r requirements.txt
-```
-
-4. Создайте файл `.env` и настройте переменные окружения:
-```bash
-cp .env.example .env
-# Отредактируйте .env файл, добавив необходимые значения
-```
-
-5. Создайте необходимые директории:
-```bash
-mkdir -p assets/backgrounds assets/fonts output/covers
-```
-
-6. Скачайте шрифты:
-```bash
-# Скачайте Montserrat с Google Fonts и поместите в assets/fonts/
-# Montserrat-Bold.ttf
-# Montserrat-Regular.ttf
-```
-
-7. Инициализируйте базу данных:
-```bash
-python init_db.py
-```
-
-## Настройка
-
-### Telegram Bots
-
-1. Создайте бота через @BotFather
-2. Получите токены для админ-бота и основного бота
-3. Добавьте токены в `.env` файл
-
-### MongoDB
-
-1. Установите MongoDB
-2. Создайте базу данных
-3. Настройте URI в `.env` файле
-
-### Social Media Integration
-
-#### TikTok
-1. Создайте приложение на [TikTok for Developers](https://developers.tiktok.com/)
-2. Получите Client Key и Client Secret
-3. Настройте Redirect URI
-4. Добавьте ключи в `.env` файл
-
-#### Instagram
-1. Создайте приложение на [Facebook for Developers](https://developers.facebook.com/)
-2. Получите Client ID и Client Secret
-3. Настройте Redirect URI
-4. Добавьте ключи в `.env` файл
-
-## Запуск
-
-1. Запустите админ-бота:
-```bash
-python admin_bot.py
-```
-
-2. Запустите основной бот:
-```bash
-python main_bot.py
-```
+Sparkaph - это платформа, где пользователи могут:
+- Участвовать в различных челленджах
+- Снимать и отправлять видео
+- Получать обратную связь
+- Соревноваться с другими участниками
+- Зарабатывать награды и бейджи
 
 ## Структура проекта
 
 ```
 sparkaph/
-├── admin_bot.py          # Админ-бот
-├── main_bot.py          # Основной бот
-├── init_db.py           # Инициализация БД
-├── monitoring.py        # Система мониторинга
-├── social_integrations.py # Интеграции с соцсетями
-├── cover_generator.py   # Генератор обложек
-├── requirements.txt     # Зависимости
-├── .env                # Переменные окружения
-├── assets/             # Ассеты
-│   ├── backgrounds/    # Фоны для обложек
-│   └── fonts/         # Шрифты
-└── output/            # Выходные файлы
-    └── covers/        # Сгенерированные обложки
+├── bots/
+│   ├── user_bot.py      # Бот для пользователей
+│   ├── admin_bot.py     # Бот для администраторов
+│   └── influencer_bot.py # Бот для блогеров
+├── database/
+│   ├── models.py        # Модели данных
+│   └── operations.py    # Операции с базой данных
+├── handlers/
+│   ├── user_handlers.py
+│   ├── admin_handlers.py
+│   └── influencer_handlers.py
+├── utils/
+│   ├── keyboards.py     # Клавиатуры
+│   ├── states.py        # Состояния FSM
+│   └── helpers.py       # Вспомогательные функции
+└── config.py           # Конфигурация
 ```
 
-## Мониторинг
+## Установка
 
-Система мониторинга доступна через админ-бота:
-
-- `/system_stats` - статистика системы
-- `/optimize_db` - оптимизация базы данных
-- `/performance` - статистика производительности
-
-## Безопасность
-
-- Все чувствительные данные хранятся в `.env` файле
-- Используется JWT для аутентификации
-- Данные шифруются перед сохранением
-- Настроена система rate limiting
-
-## Разработка
-
-### Тестирование
-
+1. Клонируйте репозиторий
+2. Создайте виртуальное окружение:
 ```bash
-# Запуск тестов
-pytest
-
-# Запуск с отчетом о покрытии
-pytest --cov=.
+python -m venv venv
+source venv/bin/activate  # для Linux/Mac
+venv\Scripts\activate     # для Windows
 ```
-
-### Линтинг
-
+3. Установите зависимости:
 ```bash
-# Проверка кода
-flake8
-black .
-isort .
+pip install -r requirements.txt
+```
+4. Создайте файл .env на основе .env.example и заполните его своими данными
+5. Запустите нужного бота:
+```bash
+python -m bots.user_bot     # для пользовательского бота
+python -m bots.admin_bot    # для админ-бота
+python -m bots.influencer_bot # для блогерского бота
 ```
 
-## Лицензия
+## Функциональность
 
-MIT License
+### Пользовательский бот
+- Онбординг и выбор языка
+- Просмотр доступных челленджей
+- Отправка видео
+- Просмотр прогресса
+- Система наград и бейджей
+- Лидерборд
 
-## Поддержка
+### Админ-бот
+- Модерация видео
+- Управление челленджами
+- Статистика и аналитика
+- Управление блогерами
 
-При возникновении проблем создайте issue в репозитории проекта.
+### Блогерский бот
+- Создание челленджей
+- Просмотр статистики
+- Управление своей категорией
 
-# Telegram Bots
-
-## Быстрый деплой на Fly.io (БЕСПЛАТНО)
-
-1. Установите Fly CLI:
-   - Windows (PowerShell):
-   ```powershell
-   iwr https://fly.io/install.ps1 -useb | iex
-   ```
-   - Linux/Mac:
-   ```bash
-   curl -L https://fly.io/install.sh | sh
-   ```
-
-2. Войдите в аккаунт:
-   ```bash
-   fly auth signup
-   ```
-
-3. Деплой (займет 2-3 минуты):
-   ```bash
-   fly launch
-   ```
-
-4. Добавьте переменные окружения:
-   ```bash
-   fly secrets set USER_BOT_TOKEN="ваш_токен"
-   fly secrets set ADMIN_BOT_TOKEN="ваш_токен"
-   fly secrets set INFLUENCER_BOT_TOKEN="ваш_токен"
-   ```
-
-5. Запустите приложение:
-   ```bash
-   fly deploy
-   ```
-
-## Проверка работы
-
-После деплоя бот будет доступен по адресу:
-- https://sparkaph-bots.fly.dev/health
-
-## Особенности
-- Работает 24/7
-- Поддерживает до 1000 пользователей
-- Бесплатный тариф
-- Автоматический рестарт при сбоях
-- Не требует карты
-- Все боты в одном приложении
+## Требования
+- Python 3.8+
+- MongoDB
+- Telegram Bot API токены 
