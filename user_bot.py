@@ -1417,9 +1417,15 @@ async def main():
         await setup_healthcheck()
         # Инициализируем базу данных
         await init_db()
+        # Запускаем менеджер сессий
+        session_manager.start()
         # Запускаем планировщик напоминаний
         asyncio.create_task(reminder_scheduler())
-        await dp.start_polling(bot)
+        try:
+            await dp.start_polling(bot)
+        finally:
+            # Закрываем все сессии при завершении
+            await session_manager.stop()
     except Exception as e:
         logger.error(f"Ошибка в main: {e}")
         raise
@@ -2103,10 +2109,16 @@ async def cleanup_achievements():
 
 # Добавляем запуск очистки при старте бота
 if __name__ == '__main__':
-    # Запускаем очистку достижений
-    asyncio.create_task(cleanup_achievements())
-    # Запускаем бота
-    asyncio.run(main())
+    try:
+        # Запускаем очистку достижений
+        asyncio.create_task(cleanup_achievements())
+        # Запускаем бота
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}")
+        raise
 
 def register_handlers(dispatcher):
     pass
