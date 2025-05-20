@@ -16,20 +16,33 @@ logger = logging.getLogger(__name__)
 # Загрузка переменных окружения
 load_dotenv()
 
-# Проверка токенов
-USER_BOT_TOKEN = os.getenv("USER_BOT_TOKEN")
-ADMIN_BOT_TOKEN = os.getenv("ADMIN_BOT_TOKEN")
-INFLUENCER_BOT_TOKEN = os.getenv("INFLUENCER_BOT_TOKEN")
+# Проверка всех необходимых переменных окружения
+required_vars = {
+    "USER_BOT_TOKEN": os.getenv("USER_BOT_TOKEN"),
+    "ADMIN_BOT_TOKEN": os.getenv("ADMIN_BOT_TOKEN"),
+    "INFLUENCER_BOT_TOKEN": os.getenv("INFLUENCER_BOT_TOKEN"),
+    "ADMIN_ID": os.getenv("ADMIN_ID"),
+    "CHANNEL_ID": os.getenv("CHANNEL_ID"),
+    "MONGODB_URI": os.getenv("MONGODB_URI"),
+    "PORT": os.getenv("PORT", "8080")
+}
 
-if not all([USER_BOT_TOKEN, ADMIN_BOT_TOKEN, INFLUENCER_BOT_TOKEN]):
-    logger.error("Missing bot tokens in environment variables!")
-    raise ValueError("Missing bot tokens in environment variables!")
+# Проверка наличия всех переменных
+missing_vars = [var for var, value in required_vars.items() if not value]
+if missing_vars:
+    logger.error(f"Missing environment variables: {', '.join(missing_vars)}")
+    raise ValueError(f"Missing environment variables: {', '.join(missing_vars)}")
 
-logger.info("Initializing bots...")
+logger.info("All environment variables are set")
+logger.info(f"PORT: {required_vars['PORT']}")
+logger.info(f"ADMIN_ID: {required_vars['ADMIN_ID']}")
+logger.info(f"CHANNEL_ID: {required_vars['CHANNEL_ID']}")
+
 # Инициализация ботов
-user_bot = Bot(token=USER_BOT_TOKEN)
-admin_bot = Bot(token=ADMIN_BOT_TOKEN)
-influencer_bot = Bot(token=INFLUENCER_BOT_TOKEN)
+logger.info("Initializing bots...")
+user_bot = Bot(token=required_vars["USER_BOT_TOKEN"])
+admin_bot = Bot(token=required_vars["ADMIN_BOT_TOKEN"])
+influencer_bot = Bot(token=required_vars["INFLUENCER_BOT_TOKEN"])
 
 # Инициализация диспетчеров
 user_dp = Dispatcher()
@@ -51,12 +64,19 @@ async def user_echo(message: types.Message):
 @admin_dp.message(Command("start"))
 async def admin_start(message: types.Message):
     logger.info(f"Admin bot received /start command from user {message.from_user.id}")
-    await message.answer("👋 Привет! Я админ-бот Sparkaph.")
+    if str(message.from_user.id) == required_vars["ADMIN_ID"]:
+        await message.answer("👋 Привет! Я админ-бот Sparkaph.")
+    else:
+        await message.answer("⛔ У вас нет доступа к админ-боту.")
 
 @admin_dp.message()
 async def admin_echo(message: types.Message):
-    logger.info(f"Admin bot received message: {message.text} from user {message.from_user.id}")
-    await message.answer(f"Админ, вы написали: {message.text}")
+    if str(message.from_user.id) == required_vars["ADMIN_ID"]:
+        logger.info(f"Admin bot received message: {message.text} from admin {message.from_user.id}")
+        await message.answer(f"Админ, вы написали: {message.text}")
+    else:
+        logger.warning(f"Unauthorized access attempt to admin bot from user {message.from_user.id}")
+        await message.answer("⛔ У вас нет доступа к админ-боту.")
 
 # Обработчики для influencer_bot
 @influencer_dp.message(Command("start"))
@@ -80,7 +100,7 @@ app.router.add_get('/health', healthcheck)
 async def start_bots():
     try:
         # Запуск веб-сервера
-        port = int(os.getenv('PORT', 8080))
+        port = int(required_vars["PORT"])
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', port)
@@ -89,9 +109,9 @@ async def start_bots():
         
         # Запуск ботов
         logger.info("Starting bots...")
-        logger.info(f"User bot token: {USER_BOT_TOKEN[:5]}...")
-        logger.info(f"Admin bot token: {ADMIN_BOT_TOKEN[:5]}...")
-        logger.info(f"Influencer bot token: {INFLUENCER_BOT_TOKEN[:5]}...")
+        logger.info(f"User bot token: {required_vars['USER_BOT_TOKEN'][:5]}...")
+        logger.info(f"Admin bot token: {required_vars['ADMIN_BOT_TOKEN'][:5]}...")
+        logger.info(f"Influencer bot token: {required_vars['INFLUENCER_BOT_TOKEN'][:5]}...")
         
         await asyncio.gather(
             user_dp.start_polling(user_bot),
