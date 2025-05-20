@@ -107,17 +107,23 @@ async def start_bots():
         await site.start()
         logger.info(f"Web server started on port {port}")
         
-        # Запуск ботов
+        # Запуск ботов с задержкой
         logger.info("Starting bots...")
         logger.info(f"User bot token: {required_vars['USER_BOT_TOKEN'][:5]}...")
         logger.info(f"Admin bot token: {required_vars['ADMIN_BOT_TOKEN'][:5]}...")
         logger.info(f"Influencer bot token: {required_vars['INFLUENCER_BOT_TOKEN'][:5]}...")
         
-        await asyncio.gather(
-            user_dp.start_polling(user_bot),
-            admin_dp.start_polling(admin_bot),
-            influencer_dp.start_polling(influencer_bot)
-        )
+        # Запускаем ботов последовательно с задержкой
+        await user_dp.start_polling(user_bot)
+        await asyncio.sleep(2)  # Ждем 2 секунды
+        await admin_dp.start_polling(admin_bot)
+        await asyncio.sleep(2)  # Ждем 2 секунды
+        await influencer_dp.start_polling(influencer_bot)
+        
+        # Держим ботов запущенными
+        while True:
+            await asyncio.sleep(3600)  # Проверяем каждый час
+            
     except Exception as e:
         logger.error(f"Error starting application: {e}")
         raise
