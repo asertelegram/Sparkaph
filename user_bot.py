@@ -621,7 +621,7 @@ async def show_challenge_categories(message: Message, state: FSMContext):
         )
         await state.set_state(UserStates.selecting_category)
         
-    except Exception as e:
+        except Exception as e:
         logger.error(f"Ошибка при показе категорий челленджей: {e}")
         await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
         await state.clear()
