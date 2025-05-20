@@ -1,12 +1,14 @@
 import logging
 import aiohttp
 from contextlib import asynccontextmanager
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 class SessionManager:
     def __init__(self):
         self.sessions = {}
+        self._cleanup_task = None
     
     @asynccontextmanager
     async def get_session(self, bot_type: str):
@@ -26,5 +28,28 @@ class SessionManager:
                     await session.close()
             except Exception as e:
                 logger.error(f"Error closing session for {bot_type}: {e}")
+    
+    async def start_cleanup(self):
+        """Запускает периодическую очистку сессий"""
+        while True:
+            try:
+                await self.close_all()
+            except Exception as e:
+                logger.error(f"Error in session cleanup: {e}")
+            await asyncio.sleep(300)  # Проверяем каждые 5 минут
+    
+    def start(self):
+        """Запускает менеджер сессий"""
+        self._cleanup_task = asyncio.create_task(self.start_cleanup())
+    
+    async def stop(self):
+        """Останавливает менеджер сессий"""
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+        await self.close_all()
 
 session_manager = SessionManager() 
