@@ -163,3 +163,29 @@ MIT License
 ## Поддержка
 
 При возникновении проблем создайте issue в репозитории проекта.
+
+# Telegram Bots
+
+## Быстрый деплой на Render.com
+
+1. Зарегистрируйтесь на [Render.com](https://render.com) (бесплатно, без карты)
+2. Нажмите "New +" и выберите "Blueprint"
+3. Подключите ваш GitHub репозиторий
+4. Render автоматически создаст 3 сервиса для ботов
+5. В настройках каждого сервиса добавьте токены ботов:
+   - USER_BOT_TOKEN
+   - ADMIN_BOT_TOKEN
+   - INFLUENCER_BOT_TOKEN
+
+## Проверка работы
+
+После деплоя боты будут доступны по адресам:
+- https://user-bot.onrender.com/health
+- https://admin-bot.onrender.com/health
+- https://influencer-bot.onrender.com/health
+
+## Особенности
+- Работает 24/7
+- Поддерживает до 1000 пользователей
+- Бесплатный тариф
+- Автоматический рестарт при сбоях

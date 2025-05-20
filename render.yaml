@@ -60,4 +60,32 @@ services:
       - key: CHANNEL_ID
         sync: false
       - key: ADMIN_ID
+        sync: false
+
+  # Новые сервисы
+  - type: web
+    name: user-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python user_bot.py
+    envVars:
+      - key: USER_BOT_TOKEN
+        sync: false
+
+  - type: web
+    name: admin-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python admin_bot.py
+    envVars:
+      - key: ADMIN_BOT_TOKEN
+        sync: false
+
+  - type: web
+    name: influencer-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python influencer_bot.py
+    envVars:
+      - key: INFLUENCER_BOT_TOKEN
         sync: false 
