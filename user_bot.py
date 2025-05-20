@@ -39,6 +39,7 @@ import asyncio
 from datetime import datetime, UTC
 from motor.motor_asyncio import AsyncIOMotorClient
 from achievements import AchievementSystem, Achievement
+import aiohttp.web
 
 # Настройка логирования
 logging.basicConfig(
@@ -52,6 +53,20 @@ load_dotenv()
 
 # Установка глобального флага для имитации успешного подключения к MongoDB
 MOCK_DB = False  # Установите в True для отладки без MongoDB
+
+# Добавляем простой healthcheck сервер
+async def setup_healthcheck():
+    app = aiohttp.web.Application()
+    
+    async def health_handler(request):
+        return aiohttp.web.Response(text='OK', status=200)
+    
+    app.router.add_get('/health', health_handler)
+    runner = aiohttp.web.AppRunner(app)
+    await runner.setup()
+    site = aiohttp.web.TCPSite(runner, '0.0.0.0', 8080)
+    await site.start()
+    logger.info("Healthcheck сервер запущен на 0.0.0.0:8080/health")
 
 # Инициализация бота и диспетчера
 try:
@@ -1398,6 +1413,8 @@ async def init_db():
 async def main():
     try:
         logger.info("Запуск пользовательского бота")
+        # Запускаем healthcheck сервер
+        await setup_healthcheck()
         # Инициализируем базу данных
         await init_db()
         # Запускаем планировщик напоминаний
@@ -2088,9 +2105,8 @@ async def cleanup_achievements():
 if __name__ == '__main__':
     # Запускаем очистку достижений
     asyncio.create_task(cleanup_achievements())
-    
     # Запускаем бота
-    executor.start_polling(dp, skip_updates=True) 
+    asyncio.run(main())
 
 def register_handlers(dispatcher):
     pass
