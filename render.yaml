@@ -1,9 +1,21 @@
 services:
+  # Healthcheck web service
+  - type: web
+    name: sparkaph-health
+    env: python
+    buildCommand: python -m pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python healthcheck.py
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8080
+
   # Сервис пользовательского бота
   - type: worker
     name: sparkaph-user-bot
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: python -m pip install --upgrade pip && pip install -r requirements.txt
     startCommand: python start_user_bot.py
     plan: free
     envVars:
@@ -20,7 +32,7 @@ services:
   - type: worker
     name: sparkaph-admin-bot
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: python -m pip install --upgrade pip && pip install -r requirements.txt
     startCommand: python start_admin_bot.py
     plan: free
     envVars:
@@ -37,7 +49,7 @@ services:
   - type: worker
     name: sparkaph-influencer-bot
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: python -m pip install --upgrade pip && pip install -r requirements.txt
     startCommand: python start_influencer_bot.py
     plan: free
     envVars:

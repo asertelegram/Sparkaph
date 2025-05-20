@@ -590,22 +590,21 @@ async def show_challenge_categories(message: Message, state: FSMContext):
         categories = await db.categories.find({"status": "active"}).to_list(length=None)
         
         if not categories:
-            await message.answer("К сожалению, сейчас нет доступных категорий. Попробуй позже.")
+            await message.answer("К сожалению, сейчас нет доступных категорий челленджей.")
             return
         
-        # Создаем клавиатуру с категориями
         keyboard = InlineKeyboardMarkup(row_width=1)
         for category in categories:
             keyboard.add(InlineKeyboardButton(
                 text=category["name"],
-                        callback_data=f"category_{category['_id']}"
+                callback_data=f"category_{category['_id']}"
             ))
         
         await message.answer(
             "Выбери категорию челленджа:",
             reply_markup=keyboard
         )
-            await state.set_state(UserStates.selecting_category)
+        await state.set_state(UserStates.selecting_category)
         
     except Exception as e:
         logger.error(f"Ошибка при показе категорий челленджей: {e}")
