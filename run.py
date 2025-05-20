@@ -1,9 +1,24 @@
 import asyncio
 import logging
 from aiohttp import web
-from bots.user_bot import main as user_bot_main
-from bots.admin_bot import main as admin_bot_main
-from bots.influencer_bot import main as influencer_bot_main
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    filters
+)
+from config import (
+    USER_BOT_TOKEN,
+    ADMIN_BOT_TOKEN,
+    INFLUENCER_BOT_TOKEN,
+    WEBHOOK_URL
+)
+from database.operations import Database
+from utils.states import UserStates, AdminStates, InfluencerStates
+import ssl
 
 # Настройка логирования
 logging.basicConfig(
@@ -12,52 +27,80 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Создаем веб-сервер для health check
+# Инициализация базы данных
+db = Database()
+
+# Создаем веб-сервер для webhook
+app = web.Application()
+routes = web.RouteTableDef()
+
+@routes.get('/health')
 async def health_check(request):
     return web.Response(text="OK")
 
+@routes.post(f'/webhook/{USER_BOT_TOKEN}')
+async def user_bot_webhook(request):
+    update = Update.de_json(await request.json(), user_bot)
+    await user_bot.process_update(update)
+    return web.Response()
+
+@routes.post(f'/webhook/{ADMIN_BOT_TOKEN}')
+async def admin_bot_webhook(request):
+    update = Update.de_json(await request.json(), admin_bot)
+    await admin_bot.process_update(update)
+    return web.Response()
+
+@routes.post(f'/webhook/{INFLUENCER_BOT_TOKEN}')
+async def influencer_bot_webhook(request):
+    update = Update.de_json(await request.json(), influencer_bot)
+    await influencer_bot.process_update(update)
+    return web.Response()
+
+async def setup_webhook(application: Application, token: str):
+    """Настраивает webhook для бота."""
+    webhook_url = f"{WEBHOOK_URL}/webhook/{token}"
+    await application.bot.set_webhook(url=webhook_url)
+    logger.info(f"Webhook set for bot {token} at {webhook_url}")
+
 async def start_web_server():
-    app = web.Application()
-    app.router.add_get('/health', health_check)
+    """Запускает веб-сервер для webhook."""
+    app.add_routes(routes)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 8080)
     await site.start()
     logger.info("Web server started on port 8080")
 
-async def run_bot(bot_main, bot_name):
-    """Запускает одного бота с обработкой ошибок."""
+async def main():
+    """Запускает все боты через webhook."""
     try:
-        logger.info(f"Starting {bot_name}...")
-        await bot_main()
-    except Exception as e:
-        logger.error(f"Error in {bot_name}: {e}")
-        raise
-
-async def run_all_bots():
-    """Запускает все боты асинхронно."""
-    try:
+        # Инициализируем боты
+        global user_bot, admin_bot, influencer_bot
+        
+        user_bot = Application.builder().token(USER_BOT_TOKEN).build()
+        admin_bot = Application.builder().token(ADMIN_BOT_TOKEN).build()
+        influencer_bot = Application.builder().token(INFLUENCER_BOT_TOKEN).build()
+        
+        # Настраиваем webhook для каждого бота
+        await setup_webhook(user_bot, USER_BOT_TOKEN)
+        await setup_webhook(admin_bot, ADMIN_BOT_TOKEN)
+        await setup_webhook(influencer_bot, INFLUENCER_BOT_TOKEN)
+        
         # Запускаем веб-сервер
         await start_web_server()
         
-        # Создаем задачи для каждого бота
-        tasks = [
-            run_bot(user_bot_main, "User Bot"),
-            run_bot(admin_bot_main, "Admin Bot"),
-            run_bot(influencer_bot_main, "Influencer Bot")
-        ]
-        
-        # Запускаем все боты параллельно
-        await asyncio.gather(*tasks)
-        
+        # Держим приложение запущенным
+        while True:
+            await asyncio.sleep(3600)
+            
     except Exception as e:
-        logger.error(f"Error running bots: {e}")
+        logger.error(f"Error in main: {e}")
         raise
 
 if __name__ == '__main__':
     try:
-        asyncio.run(run_all_bots())
+        asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Bots stopped by user")
+        logger.info("Application stopped by user")
     except Exception as e:
         logger.error(f"Fatal error: {e}") 

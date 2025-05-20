@@ -22,6 +22,9 @@ ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 # Тип бота
 BOT_TYPE = os.getenv('BOT_TYPE', 'all')
 
+# URL для webhook
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://sparkaph.up.railway.app')
+
 # Настройки для пользовательского бота
 WELCOME_MESSAGE = """
 👋 Добро пожаловать в Sparkaph!
