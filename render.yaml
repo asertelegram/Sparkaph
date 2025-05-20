@@ -88,4 +88,13 @@ services:
     startCommand: python influencer_bot.py
     envVars:
       - key: INFLUENCER_BOT_TOKEN
-        sync: false 
+        sync: false
+
+  - type: web
+    name: sparkaph-bots
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python start_bots.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0 
